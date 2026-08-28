@@ -2,5 +2,9 @@
 *.db
 *.db-wal
 *.db-shm
+
+# Deployment settings, included by config.inc.php when present. Never commit:
+# this is the file that would hold anything environment-specific on the server.
+env.php
 /cache/**
 !/cache/README.md
