@@ -182,6 +182,65 @@ function getToolDefinitions()
 			),
 		),
 		array(
+			'name'        => 'title_info',
+			'description' => 'Get details of one BHL title (a book or journal) from its TitleID, including the external identifiers BHL holds for it — ISSN, OCLC, Wikidata and others. Use this to follow up a search hit, or to reconcile a title against an external authority.',
+			'inputSchema' => array(
+				'type'       => 'object',
+				'properties' => array(
+					'title_id' => array('type' => 'integer', 'description' => 'BHL TitleID.'),
+				),
+				'required' => array('title_id'),
+			),
+		),
+		array(
+			'name'        => 'title_items',
+			'description' => 'List the items BHL holds for a title — the physical volumes that were scanned, with year, volume designation and holding institution. Use this to answer "which volumes or years are available?" for a journal or multi-volume work.',
+			'inputSchema' => array(
+				'type'       => 'object',
+				'properties' => array(
+					'title_id' => array('type' => 'integer', 'description' => 'BHL TitleID.'),
+					'limit'    => array('type' => 'integer', 'description' => 'Maximum items to list (default 100, max 500). Some serials run to over a thousand volumes.'),
+				),
+				'required' => array('title_id'),
+			),
+		),
+		array(
+			'name'        => 'title_parts',
+			'description' => 'List the articles and chapters BHL has indexed within a title, oldest first, optionally restricted to one year. Each carries a StartPageID that can be passed to page_text or page_image to read it. Note that many titles have no parts indexed at all — an empty result means nothing has been segmented into articles, not that the title is empty.',
+			'inputSchema' => array(
+				'type'       => 'object',
+				'properties' => array(
+					'title_id' => array('type' => 'integer', 'description' => 'BHL TitleID.'),
+					'year'     => array('type' => 'integer', 'description' => 'Optional four-digit year. Matches the year anywhere in the article date, so an article spanning 1890-1891 is returned for either year.'),
+					'limit'    => array('type' => 'integer', 'description' => 'Maximum articles to list (default 50, max 500). Long-running journals have thousands.'),
+				),
+				'required' => array('title_id'),
+			),
+		),
+		array(
+			'name'        => 'item_parts',
+			'description' => 'List the articles and chapters within one scanned item (a single volume), in the order they appear — effectively its table of contents. ItemIDs come from title_items. Each part carries a StartPageID for page_text or page_image.',
+			'inputSchema' => array(
+				'type'       => 'object',
+				'properties' => array(
+					'item_id' => array('type' => 'integer', 'description' => 'BHL ItemID, as returned by title_items.'),
+					'limit'   => array('type' => 'integer', 'description' => 'Maximum articles to list (default 100, max 500).'),
+				),
+				'required' => array('item_id'),
+			),
+		),
+		array(
+			'name'        => 'part_info',
+			'description' => 'Full details of one article or chapter: its citation, any DOI and external identifiers, and the list of PageIDs it occupies. Use the page list to read the whole article with page_text, rather than only its first page.',
+			'inputSchema' => array(
+				'type'       => 'object',
+				'properties' => array(
+					'part_id' => array('type' => 'integer', 'description' => 'BHL PartID.'),
+				),
+				'required' => array('part_id'),
+			),
+		),
+		array(
 			'name'        => 'page_text',
 			'description' => 'Get the OCR text of a single BHL page. Fetched from BHL and cached locally on first use, so the first call for a page is slower.',
 			'inputSchema' => array(
@@ -203,88 +262,6 @@ function getToolDefinitions()
 				'required' => array('page_id'),
 			),
 		),
-		array(
-			'name'        => 'name_pages',
-			'description' => 'Find the BHL pages on which a taxonomic name appears, with the work each page belongs to. The name must be matched exactly as BHL records it, and matching is case-sensitive on the genus.',
-			'inputSchema' => array(
-				'type'       => 'object',
-				'properties' => array(
-					'name'  => array('type' => 'string', 'description' => 'Taxonomic name, e.g. "Poecilia reticulata".'),
-					'limit' => $limit,
-				),
-				'required' => array('name'),
-			),
-		),
-		array(
-			'name'        => 'works_in_bbox',
-			'description' => 'Which works mention localities inside a geographic bounding box.',
-			'inputSchema' => mcp_bbox_schema($limit),
-		),
-		array(
-			'name'        => 'parts_in_bbox',
-			'description' => 'Which articles mention localities inside a geographic bounding box.',
-			'inputSchema' => mcp_bbox_schema($limit),
-		),
-		array(
-			'name'        => 'names_in_bbox',
-			'description' => 'Which taxonomic names have been recorded from inside a geographic bounding box, with how many pages mention each.',
-			'inputSchema' => mcp_bbox_schema($limit),
-		),
-		array(
-			'name'        => 'points_near',
-			'description' => 'Point localities within a radius of a coordinate, nearest first. Distance is great-circle, not a box.',
-			'inputSchema' => array(
-				'type'       => 'object',
-				'properties' => array(
-					'lat'   => array('type' => 'number', 'description' => 'Latitude in decimal degrees.'),
-					'lon'   => array('type' => 'number', 'description' => 'Longitude in decimal degrees.'),
-					'km'    => array('type' => 'number', 'description' => 'Radius in kilometres (default 100).'),
-					'limit' => $limit,
-				),
-				'required' => array('lat', 'lon'),
-			),
-		),
-		array(
-			'name'        => 'title_points',
-			'description' => 'Every point locality mentioned in one work, in page order. This is what you draw a map of a work from.',
-			'inputSchema' => array(
-				'type'       => 'object',
-				'properties' => array(
-					'title_id' => array('type' => 'integer', 'description' => 'BHL TitleID.'),
-					'limit'    => $limit,
-				),
-				'required' => array('title_id'),
-			),
-		),
-		array(
-			'name'        => 'name_points',
-			'description' => 'Where has a taxonomic name been reported from? The inverse of names_in_bbox.',
-			'inputSchema' => array(
-				'type'       => 'object',
-				'properties' => array(
-					'name'  => array('type' => 'string', 'description' => 'Taxonomic name, e.g. "Poecilia reticulata".'),
-					'limit' => $limit,
-				),
-				'required' => array('name'),
-			),
-		),
-	);
-}
-
-//----------------------------------------------------------------------------------------
-// The four bbox tools share one input schema.
-function mcp_bbox_schema($limit)
-{
-	return array(
-		'type'       => 'object',
-		'properties' => array(
-			'min_lat' => array('type' => 'number', 'description' => 'Southern edge, decimal degrees.'),
-			'max_lat' => array('type' => 'number', 'description' => 'Northern edge, decimal degrees.'),
-			'min_lon' => array('type' => 'number', 'description' => 'Western edge, decimal degrees.'),
-			'max_lon' => array('type' => 'number', 'description' => 'Eastern edge, decimal degrees.'),
-			'limit'   => $limit,
-		),
-		'required' => array('min_lat', 'max_lat', 'min_lon', 'max_lon'),
 	);
 }
 
@@ -299,15 +276,13 @@ function callTool($name, $args)
 		case 'search_parts':    return tool_search_parts($args);
 		case 'search_creators': return tool_search_creators($args);
 		case 'creator_titles':  return tool_creator_titles($args);
+		case 'title_info':      return tool_title_info($args);
+		case 'title_items':     return tool_title_items($args);
+		case 'title_parts':     return tool_title_parts($args);
+		case 'item_parts':      return tool_item_parts($args);
+		case 'part_info':       return tool_part_info($args);
 		case 'page_text':       return tool_page_text($args);
 		case 'page_image':      return tool_page_image($args);
-		case 'name_pages':      return tool_name_pages($args);
-		case 'works_in_bbox':   return tool_works_in_bbox($args);
-		case 'parts_in_bbox':   return tool_parts_in_bbox($args);
-		case 'names_in_bbox':   return tool_names_in_bbox($args);
-		case 'points_near':     return tool_points_near($args);
-		case 'title_points':    return tool_title_points($args);
-		case 'name_points':     return tool_name_points($args);
 		default:                return null;
 	}
 }
@@ -351,35 +326,6 @@ function mcp_need_fts()
 	if (!$config['has_fts'])
 	{
 		return 'The full-text index (bhl-fts.db) has not been built, so searching is unavailable. Run ./build-fts.sh to build it.';
-	}
-
-	return '';
-}
-
-// Guard the geo tools. bhl-geo.db currently holds the schema but no localities, and
-// an empty result there means "nothing has been loaded" rather than "nothing is
-// recorded from this region" - a distinction worth being explicit about, because the
-// two look identical from the outside and only one of them is a finding.
-function mcp_need_geo()
-{
-	global $config;
-
-	static $empty = null;
-
-	if (!$config['has_geo'])
-	{
-		return 'No locality database (bhl-geo.db) is present, so geographic search is unavailable.';
-	}
-
-	if ($empty === null)
-	{
-		$row = $config['bhlpdo']->query('SELECT count(*) AS n FROM geo.pagegeo')->fetch(PDO::FETCH_ASSOC);
-		$empty = ((int)$row['n'] === 0);
-	}
-
-	if ($empty)
-	{
-		return 'No point localities have been loaded yet - geo.pagegeo is empty. This is not evidence that nothing was recorded from this region; there is simply no locality data to search. Load points with ./load-geo.py.';
 	}
 
 	return '';
@@ -546,6 +492,472 @@ function tool_creator_titles($args)
 	return join("\n", $lines);
 }
 
+// A resolvable link for the identifiers that have one. BHL stores the bare value,
+// which is not much use to a reader or to a model trying to follow it up.
+function mcp_identifier_url($name, $value)
+{
+	switch ($name)
+	{
+		case 'Wikidata':
+			return 'https://www.wikidata.org/wiki/' . $value;
+
+		case 'ISSN':
+		case 'Linking ISSN':
+			return 'https://portal.issn.org/resource/ISSN/' . $value;
+
+		case 'OCLC':
+			// BHL holds these both zero-padded and not; WorldCat wants them bare.
+			return 'https://worldcat.org/oclc/' . ltrim($value, '0');
+
+		case 'DOI':
+			return 'https://doi.org/' . $value;
+
+		case 'BioStor':
+			return 'https://biostor.org/reference/' . $value;
+
+		case 'JSTOR':
+			return 'https://www.jstor.org/stable/' . $value;
+
+		default:
+			return '';
+	}
+}
+
+function tool_title_info($args)
+{
+	$id = (int)mcp_arg($args, 'title_id', 0);
+	if ($id === 0) { return 'Provide a title_id.'; }
+
+	$info = get_title_info($id);
+	if (!$info) { return 'No title found with TitleID ' . $id . '.'; }
+
+	$lines = array();
+	$lines[] = 'TitleID ' . $info->TitleID . ' - ' . mcp_val($info, 'FullTitle', '(untitled)');
+
+	$short = mcp_val($info, 'ShortTitle');
+
+	if ($short !== '' && $short !== mcp_val($info, 'FullTitle'))
+	{
+		$lines[] = 'Short title: ' . $short;
+	}
+
+	$lines[] = mcp_url('bibliography', $info->TitleID);
+
+	// What BHL actually holds, which is a different question from what the title is.
+	// A range alone can badly overstate coverage, so the item count and the number
+	// of undated items go with it.
+	if (isset($info->coverage) && is_object($info->coverage))
+	{
+		$c     = $info->coverage;
+		$items = (int)mcp_val($c, 'Items', 0);
+		$from  = mcp_val($c, 'FromYear');
+		$to    = mcp_val($c, 'ToYear');
+
+		if ($items > 0)
+		{
+			$held = $items . ' item(s) held';
+
+			if ($from !== '' && $to !== '')
+			{
+				$held .= ', ' . ($from === $to ? $from : $from . '-' . $to);
+			}
+
+			$undated = (int)mcp_val($c, 'Undated', 0);
+
+			if ($undated > 0)
+			{
+				$held .= ' (' . $undated . ' undated, so the range does not cover everything)';
+			}
+
+			$lines[] = $held;
+		}
+		else
+		{
+			$lines[] = 'No items held - nothing has been scanned for this title.';
+		}
+	}
+
+	// get_title_info() attaches each identifier as a property named after BHL's own
+	// IdentifierName, so anything that is not one of the title columns is one.
+	// Non-scalars are skipped: 'coverage' is an object, and anything added later
+	// would otherwise be concatenated into a string and fatal.
+	$skip = array(
+		'TitleID' => true, 'FullTitle' => true, 'ShortTitle' => true,
+		'coverage' => true,
+	);
+
+	$identifiers = array();
+
+	foreach ($info as $key => $value)
+	{
+		if (isset($skip[$key]))
+		{
+			continue;
+		}
+
+		if (is_object($value))
+		{
+			continue;
+		}
+
+		$values = is_array($value) ? $value : array($value);
+
+		$scalars = array();
+
+		foreach ($values as $v)
+		{
+			if (!is_array($v) && !is_object($v))
+			{
+				$scalars[] = $v;
+			}
+		}
+
+		if (count($scalars) > 0)
+		{
+			$identifiers[$key] = $scalars;
+		}
+	}
+
+	if (count($identifiers) === 0)
+	{
+		$lines[] = '';
+		$lines[] = 'No external identifiers recorded.';
+
+		return implode("\n", $lines);
+	}
+
+	$lines[] = '';
+	$lines[] = 'Identifiers:';
+
+	foreach ($identifiers as $name => $values)
+	{
+		foreach (array_unique($values) as $value)
+		{
+			$url  = mcp_identifier_url($name, $value);
+			$line = '  ' . $name . ': ' . $value;
+
+			if ($url !== '')
+			{
+				$line .= ' - ' . $url;
+			}
+
+			$lines[] = $line;
+		}
+	}
+
+	return implode("\n", $lines);
+}
+
+function tool_title_items($args)
+{
+	$id = (int)mcp_arg($args, 'title_id', 0);
+	if ($id === 0) { return 'Provide a title_id.'; }
+
+	$limit = (int)mcp_arg($args, 'limit', 100);
+	if ($limit < 1)   { $limit = 100; }
+	if ($limit > 500) { $limit = 500; }
+
+	// Ask for one more than we will show, so we can tell the difference between
+	// "that is all of them" and "there are more" - without that, a truncated list
+	// reads as a complete holdings statement.
+	$items = get_title_items($id, $limit + 1);
+
+	if (count($items) === 0)
+	{
+		return 'No items found for TitleID ' . $id . '. The title may not exist, or nothing has been scanned for it.';
+	}
+
+	$more  = (count($items) > $limit);
+	$items = array_slice($items, 0, $limit);
+
+	// Year is the sort key, so the first and last rows bound the run.
+	$first = mcp_val($items[0], 'Year');
+	$last  = mcp_val($items[count($items) - 1], 'Year');
+
+	$span = ($first !== '' && $last !== '' && $first !== $last) ? ' (' . $first . '-' . $last . ')' : '';
+
+	$lines = array();
+	$lines[] = count($items) . ' item(s) for TitleID ' . $id . $span . ':';
+
+	if ($more)
+	{
+		$lines[] = 'There are more than this - the list is truncated at ' . $limit . '. Raise limit to see further.';
+	}
+
+	$lines[] = '';
+
+	foreach ($items as $item)
+	{
+		$parts = array();
+
+		if (mcp_val($item, 'Year') !== '')        { $parts[] = mcp_val($item, 'Year'); }
+		if (mcp_val($item, 'VolumeInfo') !== '')  { $parts[] = mcp_val($item, 'VolumeInfo'); }
+
+		$lines[] = 'ItemID ' . $item->ItemID . ' - ' . (count($parts) > 0 ? join('  ', $parts) : '(no volume information)');
+
+		if (mcp_val($item, 'InstitutionName') !== '')
+		{
+			$lines[] = '  held by ' . mcp_val($item, 'InstitutionName');
+		}
+
+		$lines[] = '  ' . mcp_url('item', $item->ItemID);
+	}
+
+	return implode("\n", $lines);
+}
+
+function tool_title_parts($args)
+{
+	$id = (int)mcp_arg($args, 'title_id', 0);
+	if ($id === 0) { return 'Provide a title_id.'; }
+
+	$limit = (int)mcp_arg($args, 'limit', 50);
+	if ($limit < 1)   { $limit = 50; }
+	if ($limit > 500) { $limit = 500; }
+
+	$year = (int)mcp_arg($args, 'year', 0);
+	if ($year <= 0) { $year = null; }
+
+	// One more than we show, so a truncated list can say so - see tool_title_items.
+	$parts = get_title_parts($id, $limit + 1, $year);
+
+	if (count($parts) === 0)
+	{
+		// Two quite different findings, and conflating them would be misleading:
+		// nothing indexed at all, versus nothing in the year asked for.
+		if ($year !== null)
+		{
+			return 'No articles dated ' . $year . ' are indexed for TitleID ' . $id . '. Other years may still have articles - call again without a year to see the range covered.';
+		}
+
+		return 'No articles are indexed for TitleID ' . $id . '. BHL segments only some titles into parts, so this does not mean the title has no content - try title_items for the volumes that were scanned.';
+	}
+
+	$more  = (count($parts) > $limit);
+	$parts = array_slice($parts, 0, $limit);
+
+	$first = mcp_val($parts[0], 'Date');
+	$last  = mcp_val($parts[count($parts) - 1], 'Date');
+
+	$span = ($first !== '' && $last !== '' && $first !== $last) ? ' (' . $first . '-' . $last . ')' : '';
+
+	$lines = array();
+	$lines[] = count($parts) . ' article(s) for TitleID ' . $id
+		. ($year !== null ? ' dated ' . $year : $span) . ':';
+
+	if ($more)
+	{
+		$lines[] = 'There are more than this - the list is truncated at ' . $limit . '. Raise limit, or use search_parts to search within them.';
+	}
+
+	$lines[] = '';
+
+	foreach ($parts as $part)
+	{
+		$lines[] = 'PartID ' . $part->PartID . ' - ' . mcp_val($part, 'Title', '(untitled)');
+
+		$cite = array();
+		if (mcp_val($part, 'Date') !== '')      { $cite[] = mcp_val($part, 'Date'); }
+		if (mcp_val($part, 'Volume') !== '')    { $cite[] = 'vol. ' . mcp_val($part, 'Volume'); }
+		if (mcp_val($part, 'PageRange') !== '') { $cite[] = 'pp. ' . mcp_val($part, 'PageRange'); }
+
+		if (count($cite) > 0)
+		{
+			$lines[] = '  ' . join(', ', $cite);
+		}
+
+		// The route into the text - name it so the model knows what to do next.
+		if (mcp_val($part, 'StartPageID') !== '')
+		{
+			$lines[] = '  starts at PageID ' . $part->StartPageID . ' (use page_text to read it)';
+		}
+
+		$lines[] = '  ' . mcp_url('part', $part->PartID);
+	}
+
+	return implode("\n", $lines);
+}
+
+function tool_item_parts($args)
+{
+	$id = (int)mcp_arg($args, 'item_id', 0);
+	if ($id === 0) { return 'Provide an item_id.'; }
+
+	$limit = (int)mcp_arg($args, 'limit', 100);
+	if ($limit < 1)   { $limit = 100; }
+	if ($limit > 500) { $limit = 500; }
+
+	$parts = get_item_parts($id, $limit + 1);
+
+	if (count($parts) === 0)
+	{
+		return 'No articles are indexed within ItemID ' . $id . '. BHL segments only some items into parts, so the volume may well have been scanned in full without its contents being listed - the pages are still readable with page_text.';
+	}
+
+	$more  = (count($parts) > $limit);
+	$parts = array_slice($parts, 0, $limit);
+
+	// Flag a bound run up front, so the differing volume numbers below read as the
+	// item's structure rather than as inconsistent data.
+	$volumes = array();
+
+	foreach ($parts as $part)
+	{
+		$v = mcp_val($part, 'Volume');
+
+		if ($v !== '') { $volumes[$v] = true; }
+	}
+
+	$volumes = array_keys($volumes);
+
+	// Natural sort: these are volume labels, so "2" must come before "10", and some
+	// carry a suffix. They arrive in SequenceOrder, which does not reliably track
+	// volume - in ItemID 46213 a single part of vol. 6 sits at sequence 1, ahead of
+	// the whole of vol. 1.
+	sort($volumes, SORT_NATURAL);
+
+	$spans = (count($volumes) > 1) ? ' spanning vol. ' . join(', ', $volumes) : '';
+
+	$lines = array();
+
+	// "as they appear in the item" rather than "in volume order": the sort key is
+	// SequenceOrder, the physical order of the scan, which is not the same thing.
+	$lines[] = count($parts) . ' article(s) in ItemID ' . $id . $spans . ', in the order they appear in the item:';
+
+	if ($more)
+	{
+		$lines[] = 'There are more than this - the list is truncated at ' . $limit . '. Raise limit to see the rest.';
+	}
+
+	$lines[] = '  ' . mcp_url('item', $id);
+	$lines[] = '';
+
+	foreach ($parts as $part)
+	{
+		$lines[] = 'PartID ' . $part->PartID . ' - ' . mcp_val($part, 'Title', '(untitled)');
+
+		// Volume is printed per part, not just in the header: an item can be a bound
+		// run of several volumes (ItemID 46213 is pt.1-6), and 1671 items in BHL have
+		// parts spanning more than one, so it is not constant within an item.
+		$cite = array();
+		if (mcp_val($part, 'Date') !== '')      { $cite[] = mcp_val($part, 'Date'); }
+		if (mcp_val($part, 'Volume') !== '')    { $cite[] = 'vol. ' . mcp_val($part, 'Volume'); }
+		if (mcp_val($part, 'PageRange') !== '') { $cite[] = 'pp. ' . mcp_val($part, 'PageRange'); }
+
+		if (count($cite) > 0)
+		{
+			$lines[] = '  ' . join(', ', $cite);
+		}
+
+		if (mcp_val($part, 'StartPageID') !== '')
+		{
+			$lines[] = '  starts at PageID ' . $part->StartPageID . ' (use page_text to read it)';
+		}
+
+		$lines[] = '  ' . mcp_url('part', $part->PartID);
+	}
+
+	return implode("\n", $lines);
+}
+
+function tool_part_info($args)
+{
+	$id = (int)mcp_arg($args, 'part_id', 0);
+	if ($id === 0) { return 'Provide a part_id.'; }
+
+	$part = get_part($id);
+	if (!$part) { return 'No part found with PartID ' . $id . '.'; }
+
+	$lines = array();
+	$lines[] = 'PartID ' . $part->PartID . ' - ' . mcp_val($part, 'Title', '(untitled)');
+
+	$cite = array();
+	if (mcp_val($part, 'ContainerTitle') !== '') { $cite[] = mcp_val($part, 'ContainerTitle'); }
+	if (mcp_val($part, 'Volume') !== '')         { $cite[] = 'vol. ' . mcp_val($part, 'Volume'); }
+	if (mcp_val($part, 'Date') !== '')           { $cite[] = mcp_val($part, 'Date'); }
+	if (mcp_val($part, 'PageRange') !== '')      { $cite[] = 'pp. ' . mcp_val($part, 'PageRange'); }
+
+	if (count($cite) > 0)
+	{
+		$lines[] = implode(', ', $cite);
+	}
+
+	$lines[] = mcp_url('part', $part->PartID);
+
+	// Identifiers are attached by get_part() as properties named after BHL's own
+	// IdentifierName, alongside a lower-case 'doi' and 'pages'. Anything that is not
+	// a part column or one of those two is an identifier.
+	$skip = array(
+		'PartID' => true, 'ItemID' => true, 'ContributorName' => true,
+		'SequenceOrder' => true, 'Title' => true, 'ContainerTitle' => true,
+		'Volume' => true, 'Date' => true, 'PageRange' => true, 'StartPageID' => true,
+		'RightsStatus' => true, 'RightsStatement' => true, 'LicenseUrl' => true,
+		'RightsHolder' => true, 'pages' => true,
+	);
+
+	$identifiers = array();
+
+	foreach ($part as $key => $value)
+	{
+		if (isset($skip[$key]))
+		{
+			continue;
+		}
+
+		$identifiers[($key === 'doi') ? 'DOI' : $key] = is_array($value) ? $value : array($value);
+	}
+
+	if (count($identifiers) > 0)
+	{
+		$lines[] = '';
+		$lines[] = 'Identifiers:';
+
+		foreach ($identifiers as $name => $values)
+		{
+			foreach (array_unique($values) as $value)
+			{
+				$url  = mcp_identifier_url($name, $value);
+				$line = '  ' . $name . ': ' . $value;
+
+				if ($url !== '')
+				{
+					$line .= ' - ' . $url;
+				}
+
+				$lines[] = $line;
+			}
+		}
+	}
+
+	$pages = isset($part->pages) && is_array($part->pages) ? $part->pages : array();
+
+	$lines[] = '';
+
+	if (count($pages) === 0)
+	{
+		$lines[] = 'No pages are listed for this part.';
+
+		return implode("\n", $lines);
+	}
+
+	// One part in BHL runs to 1722 pages, so this cannot be printed unconditionally.
+	$show = array_slice($pages, 0, 40);
+
+	$lines[] = count($pages) . ' page(s), in order - pass any of these to page_text or page_image:';
+	$lines[] = '  ' . implode(' ', $show);
+
+	if (count($pages) > count($show))
+	{
+		// Not "running to": the pages are not a contiguous ascending range. PageIDs
+		// are not linear, and a part can pull in plates from elsewhere in the item,
+		// so the last page in reading order is often not the highest PageID.
+		$lines[] = '  ... and ' . (count($pages) - count($show)) . ' more not shown.';
+		$lines[] = '  The last in reading order is PageID ' . $pages[count($pages) - 1] . '.';
+	}
+
+	return implode("\n", $lines);
+}
+
 function tool_page_text($args)
 {
 	$id = (int)mcp_arg($args, 'page_id', 0);
@@ -598,195 +1010,6 @@ function tool_page_image($args)
 			'text' => 'Scan of PageID ' . $id . ' - ' . mcp_url('page', $id),
 		),
 	);
-}
-
-// Names sit in pagename, which is indexed but BINARY-collated, so this is an exact
-// match: "poecilia reticulata" finds nothing. Say so rather than reporting no hits.
-function tool_name_pages($args)
-{
-	global $config;
-
-	$name = trim(mcp_arg($args, 'name', ''));
-	if ($name === '') { return 'Provide a name.'; }
-
-	$sql = 'SELECT pn.PageID, pn.NameBankID, p.PageNumber, p.PageTypeName,
-		i.ItemID, t.TitleID, t.FullTitle
-		FROM pagename pn
-		INNER JOIN page p ON p.PageID = pn.PageID
-		INNER JOIN item i ON i.ItemID = p.ItemID
-		INNER JOIN title t ON t.TitleID = i.TitleID
-		WHERE pn.NameConfirmed = \'' . str_replace("'", "''", $name) . '\'
-		LIMIT ' . mcp_limit($args, 20);
-
-	$hits = db_get($config['bhlpdo'], $sql);
-
-	if (count($hits) === 0)
-	{
-		return 'No pages found for "' . $name . '". Matching is exact and case-sensitive, so check the spelling and the capitalisation of the genus.';
-	}
-
-	$lines = array(count($hits) . ' page(s) mentioning "' . $name . '":', '');
-
-	foreach ($hits as $hit)
-	{
-		$page = mcp_val($hit, 'PageNumber');
-
-		$lines[] = 'PageID ' . $hit->PageID . ($page !== '' ? ' (p. ' . $page . ')' : '')
-			. ' in ' . mcp_val($hit, 'FullTitle', '(untitled)');
-		$lines[] = '  ' . mcp_url('page', $hit->PageID);
-	}
-
-	return join("\n", $lines);
-}
-
-//----------------------------------------------------------------------------------------
-// Geographic tools
-
-function mcp_bbox($args)
-{
-	return array(
-		(float)mcp_arg($args, 'min_lat', 0),
-		(float)mcp_arg($args, 'max_lat', 0),
-		(float)mcp_arg($args, 'min_lon', 0),
-		(float)mcp_arg($args, 'max_lon', 0),
-	);
-}
-
-function tool_works_in_bbox($args)
-{
-	$err = mcp_need_geo();
-	if ($err !== '') { return $err; }
-
-	list($minLat, $maxLat, $minLon, $maxLon) = mcp_bbox($args);
-
-	$hits = works_in_bbox($minLat, $maxLat, $minLon, $maxLon, mcp_limit($args, 20));
-	if (count($hits) === 0) { return mcp_none('works with localities in that box'); }
-
-	$lines = array(count($hits) . ' work(s) with localities in that box:', '');
-
-	foreach ($hits as $hit)
-	{
-		$lines[] = 'TitleID ' . $hit->TitleID . ' - ' . mcp_val($hit, 'FullTitle', '(untitled)');
-		$lines[] = '  ' . mcp_val($hit, 'Points', 0) . ' point(s) on ' . mcp_val($hit, 'Pages', 0) . ' page(s)';
-		$lines[] = '  ' . mcp_url('bibliography', $hit->TitleID);
-	}
-
-	return join("\n", $lines);
-}
-
-function tool_parts_in_bbox($args)
-{
-	$err = mcp_need_geo();
-	if ($err !== '') { return $err; }
-
-	list($minLat, $maxLat, $minLon, $maxLon) = mcp_bbox($args);
-
-	$hits = parts_in_bbox($minLat, $maxLat, $minLon, $maxLon, mcp_limit($args, 20));
-	if (count($hits) === 0) { return mcp_none('articles with localities in that box'); }
-
-	$lines = array(count($hits) . ' article(s) with localities in that box:', '');
-
-	foreach ($hits as $hit)
-	{
-		$lines[] = 'PartID ' . $hit->PartID . ' - ' . mcp_val($hit, 'Title', '(untitled)');
-		$lines[] = '  ' . mcp_val($hit, 'ContainerTitle') . ' ' . mcp_val($hit, 'Date')
-			. ' - ' . mcp_val($hit, 'Points', 0) . ' point(s)';
-		$lines[] = '  ' . mcp_url('part', $hit->PartID);
-	}
-
-	return join("\n", $lines);
-}
-
-function tool_names_in_bbox($args)
-{
-	$err = mcp_need_geo();
-	if ($err !== '') { return $err; }
-
-	list($minLat, $maxLat, $minLon, $maxLon) = mcp_bbox($args);
-
-	$hits = names_in_bbox($minLat, $maxLat, $minLon, $maxLon, mcp_limit($args, 50));
-	if (count($hits) === 0) { return mcp_none('names recorded from that box'); }
-
-	$lines = array(count($hits) . ' name(s) recorded from that box:', '');
-
-	foreach ($hits as $hit)
-	{
-		$lines[] = mcp_val($hit, 'NameConfirmed') . ' - ' . mcp_val($hit, 'Pages', 0) . ' page(s)';
-	}
-
-	return join("\n", $lines);
-}
-
-function tool_points_near($args)
-{
-	$err = mcp_need_geo();
-	if ($err !== '') { return $err; }
-
-	$lat = (float)mcp_arg($args, 'lat', 0);
-	$lon = (float)mcp_arg($args, 'lon', 0);
-	$km  = (float)mcp_arg($args, 'km', 100);
-
-	if ($km <= 0) { $km = 100; }
-
-	$hits = points_near($lat, $lon, $km, mcp_limit($args, 50));
-	if (count($hits) === 0) { return mcp_none('localities within ' . $km . ' km of ' . $lat . ', ' . $lon); }
-
-	$lines = array(count($hits) . ' localit(ies) within ' . $km . ' km of ' . $lat . ', ' . $lon . ':', '');
-
-	foreach ($hits as $hit)
-	{
-		$lines[] = mcp_val($hit, 'DistanceKm', 0) . ' km - ' . mcp_val($hit, 'Locality', '(unnamed)')
-			. ' (' . mcp_val($hit, 'Latitude') . ', ' . mcp_val($hit, 'Longitude') . ')';
-		$lines[] = '  PageID ' . $hit->PageID . ' - ' . mcp_url('page', $hit->PageID);
-	}
-
-	return join("\n", $lines);
-}
-
-function tool_title_points($args)
-{
-	$err = mcp_need_geo();
-	if ($err !== '') { return $err; }
-
-	$id = (int)mcp_arg($args, 'title_id', 0);
-	if ($id === 0) { return 'Provide a title_id.'; }
-
-	$hits = points_for_title($id, mcp_limit($args, 100));
-	if (count($hits) === 0) { return mcp_none('localities in TitleID ' . $id); }
-
-	$lines = array(count($hits) . ' localit(ies) in TitleID ' . $id . ':', '');
-
-	foreach ($hits as $hit)
-	{
-		$lines[] = mcp_val($hit, 'Latitude') . ', ' . mcp_val($hit, 'Longitude')
-			. ' - ' . mcp_val($hit, 'Locality', '(unnamed)')
-			. ' [PageID ' . $hit->PageID . ']';
-	}
-
-	return join("\n", $lines);
-}
-
-function tool_name_points($args)
-{
-	$err = mcp_need_geo();
-	if ($err !== '') { return $err; }
-
-	$name = trim(mcp_arg($args, 'name', ''));
-	if ($name === '') { return 'Provide a name.'; }
-
-	$hits = points_for_name($name, mcp_limit($args, 100));
-	if (count($hits) === 0) { return mcp_none('localities for "' . $name . '"'); }
-
-	$lines = array(count($hits) . ' localit(ies) reported for "' . $name . '":', '');
-
-	foreach ($hits as $hit)
-	{
-		$lines[] = mcp_val($hit, 'Latitude') . ', ' . mcp_val($hit, 'Longitude')
-			. ' - ' . mcp_val($hit, 'Locality', '(unnamed)')
-			. ' [PageID ' . $hit->PageID . ']';
-	}
-
-	return join("\n", $lines);
 }
 
 ?>

@@ -193,9 +193,305 @@ function get_page_image($id)
 
 
 //----------------------------------------------------------------------------------------
+// Get information on name and identifiers for a title
+function get_title_info($TitleID)
+{
+	global $config;
+	
+	$result = null;
+	
+	$TitleID = (int)$TitleID;
+
+	$sql = "SELECT * FROM title WHERE TitleID = $TitleID";
+
+	$data = db_get($config['bhlpdo'], $sql);
+	
+	if (isset($data[0]))
+	{
+		$result = $data[0];
+	}
+	
+	// Identifiers
+	if ($result)
+	{
+		$sql = "SELECT * FROM titleidentifier WHERE TitleID = $TitleID";
+
+		$data = db_get($config['bhlpdo'], $sql);
+		
+		foreach ($data as $row)
+		{
+			if (!isset($result->{$row->IdentifierName}))
+			{
+				$result->{$row->IdentifierName} = [];
+			}
+			$result->{$row->IdentifierName}[] = $row->IdentifierValue;
+		}
+	}
+	
+	// DOI
+	if ($result)
+	{
+		$sql = "SELECT * FROM doi WHERE EntityType='Title' AND EntityID = $TitleID";
+
+		$data = db_get($config['bhlpdo'], $sql);
+		
+		foreach ($data as $row)
+		{
+			if (!isset($result->doi))
+			{
+				$result->doi = [];
+			}
+		
+			$result->doi[] = $row->DOI;
+		}
+	}	
+	
+	// What years do we cover in BHL?
+	if ($result)
+	{
+		$result->coverage = get_title_year_range($TitleID);
+	}	
+	
+	return $result;
+}
+
+//----------------------------------------------------------------------------------------
+// Get list of items in a title
+function get_title_items($TitleID, $limit = 500)
+{
+	global $config;
+	
+	$result = [];
+	
+	$TitleID = (int)$TitleID;
+
+	// Year first: these are volumes of a serial and they arrive in insertion order,
+	// which for a run of a journal is just noise. Year is TEXT, but they are all
+	// four digits so a lexical sort is chronological. The cap matters because one
+	// title in BHL has 1321 items.
+	$sql = "SELECT * FROM item WHERE TitleID = $TitleID ORDER BY Year LIMIT " . (int)$limit;
+
+	$data = db_get($config['bhlpdo'], $sql);
+	
+	foreach ($data as $row)
+	{
+		$item = new stdclass;
+		
+		foreach ($row as $k => $v)
+		{
+			$item->{$k} = $v;
+		}
+		$result[] = $item;
+	}
+	
+	return $result;
+}
+
+//----------------------------------------------------------------------------------------
+// Get list of parts in a title
+function get_title_parts($TitleID, $limit = 500, $year = null)
+{
+	global $config;
+	
+	$result = [];
+	
+	$TitleID = (int)$TitleID;
+
+	// Named columns rather than part.*: the rights fields, ContributorName and
+	// SequenceOrder are all noise to a caller, and ContainerTitle just repeats the
+	// title being asked about. StartPageID has to stay - it is the only route from
+	// an article to its text. Halves the response.
+	//
+	// Date orders the run chronologically. The cap matters: the largest title in
+	// BHL has 11,811 parts.
+	$where = "item.TitleID = $TitleID";
+
+	// Optional year filter. part.Date is mostly YYYY, but also YYYY-MM, YYYY-MM-DD,
+	// ranges like 1890-1891, and a few parenthesised forms such as (1894) - so match
+	// the year anywhere in the string rather than as a prefix. A part spanning
+	// 1890-1891 is therefore returned for either year, which is what you want when
+	// browsing a serial.
+	if ($year !== null && (int)$year > 0)
+	{
+		$where .= " AND instr(part.Date, '" . (int)$year . "') > 0";
+	}
+
+	$sql = "SELECT part.PartID, part.Title, part.Volume, part.Date, part.PageRange, part.StartPageID
+		FROM part INNER JOIN item USING(ItemID)
+		WHERE $where
+		ORDER BY part.Date
+		LIMIT " . (int)$limit;
+
+	$data = db_get($config['bhlpdo'], $sql);
+	
+	foreach ($data as $row)
+	{
+		$part = new stdclass;
+		
+		foreach ($row as $k => $v)
+		{
+			$part->{$k} = $v;
+		}
+		$result[] = $part;
+	}
+	
+	return $result;
+}
+
+//----------------------------------------------------------------------------------------
+// Get list of items in a title
+function get_title_year_range($TitleID)
+{
+	global $config;
+	
+	$result = null;
+	
+	$TitleID = (int)$TitleID;
+
+	$sql = "SELECT
+  COUNT(*)                        AS Items,
+  MIN(CAST(Year AS INTEGER))      AS FromYear,
+  MAX(CAST(Year AS INTEGER))      AS ToYear,
+  SUM(Year IS NULL)               AS Undated
+FROM item
+WHERE TitleID = $TitleID
+  AND (Year IS NULL OR (Year GLOB '[0-9][0-9][0-9][0-9]' AND CAST(Year AS INTEGER) BETWEEN 1450 AND 2026));";
+
+	$data = db_get($config['bhlpdo'], $sql);
+	
+	foreach ($data as $row)
+	{
+		if (!$result)
+		{
+			$result = new stdclass;
+		}
+		
+		foreach ($row as $k => $v)
+		{
+			$result->{$k} = $v;
+		}
+	}
+	
+	return $result;
+}
 
 
 //----------------------------------------------------------------------------------------
+// Get list of parts in an item
+function get_item_parts($ItemID, $limit = 500)
+{
+	global $config;
+	
+	$result = [];
+	
+	$ItemID = (int)$ItemID;
+
+	// SequenceOrder, not Date: within a single volume every part carries the same
+	// date, so ordering by it is arbitrary. SequenceOrder is the order they appear
+	// in the volume, which makes this a table of contents. One item has 580 parts,
+	// hence the cap.
+	$sql = "SELECT part.PartID, part.Title, part.Volume, part.Date, part.PageRange, part.StartPageID
+		FROM part
+		WHERE ItemID = $ItemID
+		ORDER BY part.SequenceOrder
+		LIMIT " . (int)$limit;
+
+	$data = db_get($config['bhlpdo'], $sql);
+	
+	foreach ($data as $row)
+	{
+		$part = new stdclass;
+		
+		foreach ($row as $k => $v)
+		{
+			$part->{$k} = $v;
+		}
+		$result[] = $part;
+	}
+	
+	return $result;
+}
+
+//----------------------------------------------------------------------------------------
+// Get list of parts in an item
+function get_part($PartID)
+{
+	global $config;
+	
+	$result = null;
+	
+	$PartID = (int)$PartID;
+
+	$sql = "SELECT * FROM part WHERE PartID = $PartID";
+
+	$data = db_get($config['bhlpdo'], $sql);
+	
+	foreach ($data as $row)
+	{
+		if (!$result)
+		{
+			$result = new stdclass;
+		}
+	
+		foreach ($row as $k => $v)
+		{
+			$result->{$k} = $v;
+		}
+	}
+	
+	// identifiers
+	if ($result)
+	{
+		$sql = "SELECT * FROM partidentifier WHERE PartID = $PartID";
+
+		$data = db_get($config['bhlpdo'], $sql);
+		
+		foreach ($data as $row)
+		{
+			if (!isset($result->{$row->IdentifierName}))
+			{
+				$result->{$row->IdentifierName} = [];
+			}
+			$result->{$row->IdentifierName}[] = $row->IdentifierValue;
+		}
+	}	
+	
+	// DOI
+	if ($result)
+	{
+		$sql = "SELECT * FROM doi WHERE EntityType='Part' AND EntityID = $PartID";
+
+		$data = db_get($config['bhlpdo'], $sql);
+		
+		foreach ($data as $row)
+		{
+			if (!isset($result->doi))
+			{
+				$result->doi = [];
+			}
+		
+			$result->doi[] = $row->DOI;
+		}
+	}
+	
+	// pages
+	if ($result)
+	{
+		$result->pages = [];
+		
+		$sql = "SELECT * FROM partpage WHERE PartID = $PartID ORDER BY SequenceOrder";
+
+		$data = db_get($config['bhlpdo'], $sql);
+		
+		foreach ($data as $row)
+		{
+			$result->pages[] = $row->PageID;
+		}
+	}
+		
+	
+	return $result;
+}
 
 
 //----------------------------------------------------------------------------------------
