@@ -127,11 +127,22 @@ function get_page_text($id)
 
 //----------------------------------------------------------------------------------------
 // Get image for page (may be cached)
-function get_page_image($id)
+// $size is one of small, medium, large, full - BHL's own suffixes, roughly
+// 235, 465, 930 and 1713 px wide. medium is the default because full is 300 KB,
+// which becomes ~400 KB of base64 in an MCP response; ask for full only when the
+// detail matters, such as reading a plate or cropping a figure out of one.
+function get_page_image($id, $size = 'medium')
 {
 	global $config;
 	
 	$image = null;
+
+	// Whitelist, not sanitise: this goes straight into a URL, and an unknown
+	// suffix would just 404 after a wasted fetch.
+	if (!in_array($size, array('small', 'medium', 'large', 'full')))
+	{
+		$size = 'medium';
+	}
 
 	$sql = 'SELECT * FROM page 
 	INNER JOIN item USING(ItemID)
@@ -144,7 +155,9 @@ function get_page_image($id)
 	{
 		// cached?
 		
-		$filename = $config['cache'] . '/images/' . $data[0]->ItemID . '/' .  $data[0]->PageID . '.webp';
+		// The size has to be in the filename. Without it the first size fetched wins
+		// and every later request for a different one is served the wrong image.
+		$filename = $config['cache'] . '/images/' . $data[0]->ItemID . '/' .  $data[0]->PageID . '_' . $size . '.webp';
 		
 		if (!file_exists($filename))
 		{
@@ -166,7 +179,7 @@ function get_page_image($id)
 			$url = 'https://bhl-open-data.s3.amazonaws.com/'
 			. 'web/' . $data[0]->BarCode 
 			. '/' . $data[0]->BarCode . '_' . str_pad($data[0]->SequenceOrder, 4, '0', STR_PAD_LEFT) 
-			. '_medium.webp';
+			. '_' . $size . '.webp';
 						
 			// As in get_page_text - false means throttled, null means unavailable.
 			if (!bhl_fetch_allowed())

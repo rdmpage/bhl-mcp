@@ -271,11 +271,16 @@ function getToolDefinitions()
 		),
 		array(
 			'name'        => 'page_image',
-			'description' => 'Get the scanned image of a single BHL page, so it can be read directly rather than through OCR. Useful when the OCR is garbled or when the page carries a plate or figure.',
+			'description' => 'Get the scanned image of a single BHL page, so it can be read directly rather than through OCR. Useful when the OCR is garbled or when the page carries a plate or figure. Ask for a larger size when the detail matters — a figure occupying a third of a medium page is only about 150 px across, which is too coarse to identify a specimen from.',
 			'inputSchema' => array(
 				'type'       => 'object',
 				'properties' => array(
 					'page_id' => array('type' => 'integer', 'description' => 'BHL PageID.'),
+					'size'    => array(
+						'type'        => 'string',
+						'enum'        => array('small', 'medium', 'large', 'full'),
+						'description' => 'Image width: small ~235px, medium ~465px (default), large ~930px, full ~1713px. Sizes are whole pages, so a plate needs large or full to be legible.',
+					),
 				),
 				'required' => array('page_id'),
 			),
@@ -1182,7 +1187,14 @@ function tool_page_image($args)
 	$id = (int)mcp_arg($args, 'page_id', 0);
 	if ($id === 0) { return 'Provide a page_id.'; }
 
-	$image = get_page_image($id);
+	$size = strtolower(trim(mcp_arg($args, 'size', 'medium')));
+
+	if (!in_array($size, array('small', 'medium', 'large', 'full')))
+	{
+		$size = 'medium';
+	}
+
+	$image = get_page_image($id, $size);
 
 	if ($image === false)
 	{
@@ -1194,6 +1206,12 @@ function tool_page_image($args)
 		return 'No image available for PageID ' . $id . '.';
 	}
 
+	// State the pixel dimensions. Anything reasoning about a region of the page - a
+	// crop, a figure's position - needs to know which coordinate space it is working
+	// in, and the sizes differ by a factor of 7 from small to full.
+	$info       = @getimagesizefromstring($image);
+	$dimensions = ($info !== false) ? ', ' . $info[0] . 'x' . $info[1] . ' px' : '';
+
 	// Two blocks: the image itself, plus a line of text saying what it is, because an
 	// image block alone arrives with no indication of which page it came from.
 	return array(
@@ -1204,7 +1222,8 @@ function tool_page_image($args)
 		),
 		array(
 			'type' => 'text',
-			'text' => 'Scan of PageID ' . $id . ' - ' . mcp_url('page', $id),
+			'text' => 'Scan of PageID ' . $id . ' at size "' . $size . '"' . $dimensions
+				. ' - ' . mcp_url('page', $id),
 		),
 	);
 }
