@@ -271,7 +271,7 @@ function getToolDefinitions()
 		),
 		array(
 			'name'        => 'page_image',
-			'description' => 'Get the scanned image of a single BHL page, so it can be read directly rather than through OCR. Useful when the OCR is garbled or when the page carries a plate or figure. Ask for a larger size when the detail matters — a figure occupying a third of a medium page is only about 150 px across, which is too coarse to identify a specimen from.',
+			'description' => 'Get the scanned image of a single BHL page, so it can be read directly rather than through OCR. Useful when the OCR is garbled or when the page carries a plate or figure. Ask for a larger size when the detail matters — a figure occupying a third of a medium page is only about 150 px across, which is too coarse to identify a specimen from. To return just one figure, give a crop box as fractions of the page (left/top/right/bottom, 0-1); fractions are resolution-independent, so the same box works at any size. Crop generously — a box read off a page image is an estimate, and a tight one clips the subject.',
 			'inputSchema' => array(
 				'type'       => 'object',
 				'properties' => array(
@@ -279,8 +279,12 @@ function getToolDefinitions()
 					'size'    => array(
 						'type'        => 'string',
 						'enum'        => array('small', 'medium', 'large', 'full'),
-						'description' => 'Image width: small ~235px, medium ~465px (default), large ~930px, full ~1713px. Sizes are whole pages, so a plate needs large or full to be legible.',
+						'description' => 'Image width: small ~235px, medium ~465px (default), large ~930px, full ~1713px. Sizes are whole pages, so a plate needs large or full to be legible. Defaults to full when a crop is given.',
 					),
+					'left'   => array('type' => 'number', 'description' => 'Crop box, left edge as a fraction of page width (0-1).'),
+					'top'    => array('type' => 'number', 'description' => 'Crop box, top edge as a fraction of page height (0-1).'),
+					'right'  => array('type' => 'number', 'description' => 'Crop box, right edge as a fraction of page width (0-1).'),
+					'bottom' => array('type' => 'number', 'description' => 'Crop box, bottom edge as a fraction of page height (0-1).'),
 				),
 				'required' => array('page_id'),
 			),
@@ -1182,16 +1186,118 @@ function tool_page_text($args)
 	return 'OCR text of PageID ' . $id . ' (' . mcp_url('page', $id) . "):\n\n" . $text;
 }
 
+// Crop to a box given as fractions of the page. Fractions rather than pixels
+// because a box is normally worked out by looking at one rendering and applied to
+// another - at pixel scale that silently crops the wrong region, since small to
+// full is a factor of 7.3.
+//
+// Returns the cropped bytes, or a string describing why it could not.
+function mcp_crop_image($bytes, $box, &$width, &$height)
+{
+	$src = @imagecreatefromstring($bytes);
+
+	if ($src === false)
+	{
+		return 'The image could not be decoded, so it was returned uncropped.';
+	}
+
+	$w = imagesx($src);
+	$h = imagesy($src);
+
+	// floor the near edges and ceil the far ones, so rounding can only widen the
+	// box. Clipping a specimen is worse than including a millimetre of margin.
+	$x1 = (int)floor($box['left']   * $w);
+	$y1 = (int)floor($box['top']    * $h);
+	$x2 = (int)ceil($box['right']   * $w);
+	$y2 = (int)ceil($box['bottom']  * $h);
+
+	$x1 = max(0, min($w - 1, $x1));
+	$y1 = max(0, min($h - 1, $y1));
+	$x2 = max($x1 + 1, min($w, $x2));
+	$y2 = max($y1 + 1, min($h, $y2));
+
+	$out = imagecrop($src, array('x' => $x1, 'y' => $y1, 'width' => $x2 - $x1, 'height' => $y2 - $y1));
+	imagedestroy($src);
+
+	if ($out === false)
+	{
+		return 'The crop produced an empty image, so the page was returned uncropped.';
+	}
+
+	$width  = imagesx($out);
+	$height = imagesy($out);
+
+	ob_start();
+	imagewebp($out, null, 82);
+	$cropped = ob_get_clean();
+	imagedestroy($out);
+
+	return ($cropped === '' || $cropped === false)
+		? 'The cropped image could not be encoded, so the page was returned uncropped.'
+		: $cropped;
+}
+
+// True when the caller supplied some crop edges but not a usable box - so a
+// mistake can be reported rather than silently returning the whole page.
+function mcp_crop_partial($args)
+{
+	foreach (array('left', 'top', 'right', 'bottom') as $edge)
+	{
+		if (isset($args[$edge]))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// Read the four crop fractions, or null if no usable box was given.
+function mcp_crop_box($args)
+{
+	$box = array();
+
+	foreach (array('left', 'top', 'right', 'bottom') as $edge)
+	{
+		if (!isset($args[$edge]) || !is_numeric($args[$edge]))
+		{
+			return null;
+		}
+
+		$box[$edge] = (float)$args[$edge];
+	}
+
+	foreach ($box as $v)
+	{
+		if ($v < 0.0 || $v > 1.0)
+		{
+			return null;
+		}
+	}
+
+	if ($box['right'] <= $box['left'] || $box['bottom'] <= $box['top'])
+	{
+		return null;
+	}
+
+	return $box;
+}
+
 function tool_page_image($args)
 {
 	$id = (int)mcp_arg($args, 'page_id', 0);
 	if ($id === 0) { return 'Provide a page_id.'; }
 
-	$size = strtolower(trim(mcp_arg($args, 'size', 'medium')));
+	$box = mcp_crop_box($args);
+
+	// A crop is a request for detail, so take the biggest source unless told
+	// otherwise - cropping 40% out of a 465px page gives about 190px, which is the
+	// problem the crop was meant to solve.
+	$size = strtolower(trim(mcp_arg($args, 'size', ($box === null) ? 'medium' : 'full')));
 
 	if (!in_array($size, array('small', 'medium', 'large', 'full')))
 	{
-		$size = 'medium';
+		$size = ($box === null) ? 'medium' : 'full';
 	}
 
 	$image = get_page_image($id, $size);
@@ -1204,6 +1310,33 @@ function tool_page_image($args)
 	if ($image === null || strlen($image) === 0)
 	{
 		return 'No image available for PageID ' . $id . '.';
+	}
+
+	$note = '';
+
+	if ($box !== null)
+	{
+		$w = 0;
+		$h = 0;
+
+		$cropped = mcp_crop_image($image, $box, $w, $h);
+
+		if (is_string($cropped) && $w > 0)
+		{
+			$image = $cropped;
+			$note  = ' cropped to ' . $box['left'] . '-' . $box['right'] . ' across and '
+				. $box['top'] . '-' . $box['bottom'] . ' down';
+		}
+		else
+		{
+			// mcp_crop_image returns a message instead of bytes when it fails. Say so
+			// rather than passing off a whole page as the requested detail.
+			$note = ' (crop failed: ' . $cropped . ')';
+		}
+	}
+	else if (mcp_crop_partial($args))
+	{
+		$note = ' (crop ignored: left, top, right and bottom must all be given, each 0-1, with right > left and bottom > top)';
 	}
 
 	// State the pixel dimensions. Anything reasoning about a region of the page - a
@@ -1222,7 +1355,7 @@ function tool_page_image($args)
 		),
 		array(
 			'type' => 'text',
-			'text' => 'Scan of PageID ' . $id . ' at size "' . $size . '"' . $dimensions
+			'text' => 'Scan of PageID ' . $id . ' at size "' . $size . '"' . $note . $dimensions
 				. ' - ' . mcp_url('page', $id),
 		),
 	);
