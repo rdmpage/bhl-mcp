@@ -31,7 +31,12 @@ $config['bhldb']    = dirname(__FILE__) . '/bhl.db';
 $config['bhlftsdb'] = dirname(__FILE__) . '/bhl-fts.db';
 $config['bhlgeodb'] = dirname(__FILE__) . '/bhl-geo.db';
 
-$config['bhlpdo'] = new PDO('sqlite:' . $config['bhldb']);
+// Read-only. Nothing that serves queries has any business writing here, and the
+// importer builds bhl.db by another route, so this costs nothing and means a stray
+// UPDATE in a query cannot touch a 19 GB file that takes hours to rebuild.
+// The attached indexes below inherit the read-only flag.
+$config['bhlpdo'] = new PDO('sqlite:' . $config['bhldb'], null, null,
+	array(PDO::SQLITE_ATTR_OPEN_FLAGS => PDO::SQLITE_OPEN_READONLY));
 $config['bhlpdo']->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 // Full-text/fuzzy indexes live in a separate file so re-importing a BHL dump

@@ -1,4 +1,6 @@
 .DS_Store
 *.db
+*.db-wal
+*.db-shm
 /cache/**
 !/cache/README.md

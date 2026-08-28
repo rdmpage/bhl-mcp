@@ -1,0 +1,18 @@
+# /mcp -> mcp_http_server.php. Keeps the public URL clean and stable, which
+# matters because it is the URL people paste into their AI tool as a connector.
+RewriteEngine On
+RewriteRule ^mcp$ mcp_http_server.php [L]
+
+# The cache holds fetched BHL pages and the fetch-budget state file. Not secret,
+# but there is no reason to serve it.
+RewriteRule ^cache/ - [F,L]
+
+# The databases and the query layer sit in the same directory as the served
+# scripts. Nothing here should ever be fetchable over HTTP.
+<FilesMatch "\.(db|db-wal|db-shm|sh|py)$">
+	Require all denied
+</FilesMatch>
+
+<FilesMatch "^(queries|sqlite|config\.inc|mcp_handler|import-bhl|env)\.php$">
+	Require all denied
+</FilesMatch>
