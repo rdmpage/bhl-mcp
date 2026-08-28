@@ -134,25 +134,18 @@ function getToolDefinitions()
 
 	return array(
 		array(
-			'name'        => 'search_titles',
-			'description' => 'Search BHL titles (books and journals) by words in the title, author or subject headings. Widens automatically: an exact all-words match first, then any-word, then substring matching for approximate wording.',
+			'name'        => 'search',
+			'description' => 'Search the Biodiversity Heritage Library by words in a title, author or subject. Covers both books and journals (titles) and the articles and chapters within them (parts), because a reference may be either. Returns the two kinds in separate sections; restrict with the type argument when only one is wanted. Search widens automatically - an exact all-words match first, then any-word, then substring matching for approximate wording.',
 			'inputSchema' => array(
 				'type'       => 'object',
 				'properties' => array(
 					'text'  => array('type' => 'string', 'description' => 'Words to search for, e.g. "orchids of madagascar".'),
-					'limit' => $limit,
-				),
-				'required' => array('text'),
-			),
-		),
-		array(
-			'name'        => 'search_parts',
-			'description' => 'Search BHL parts (articles and book chapters) by words in the article title, container title or author.',
-			'inputSchema' => array(
-				'type'       => 'object',
-				'properties' => array(
-					'text'  => array('type' => 'string', 'description' => 'Words to search for, e.g. "new species of Sphaerodactylus".'),
-					'limit' => $limit,
+					'type'  => array(
+						'type'        => 'string',
+						'enum'        => array('all', 'titles', 'articles'),
+						'description' => 'What to search: "all" (default) returns both, "titles" only books and journals, "articles" only parts.',
+					),
+					'limit' => array('type' => 'integer', 'description' => 'Maximum results per section (default 10, max 100).'),
 				),
 				'required' => array('text'),
 			),
@@ -241,6 +234,31 @@ function getToolDefinitions()
 			),
 		),
 		array(
+			'name'        => 'item_pages',
+			'description' => 'List the PageIDs of a scanned item, in reading order. Use this to walk a volume page by page with page_text or page_image when it has no article-level parts, or to reach pages that no part covers. ItemIDs come from title_items.',
+			'inputSchema' => array(
+				'type'       => 'object',
+				'properties' => array(
+					'item_id' => array('type' => 'integer', 'description' => 'BHL ItemID, as returned by title_items.'),
+					'limit'   => array('type' => 'integer', 'description' => 'Maximum PageIDs to list (default 200, max 1000).'),
+				),
+				'required' => array('item_id'),
+			),
+		),
+		array(
+			'name'        => 'name_pages',
+			'description' => 'Find the BHL pages on which a taxonomic name appears, with the work each page belongs to. Set illustrated to true for pages carrying a plate or figure, which with page_image is how to actually show someone a picture of a taxon. The name must be matched exactly as BHL records it, and matching is case-sensitive on the genus.',
+			'inputSchema' => array(
+				'type'       => 'object',
+				'properties' => array(
+					'name'        => array('type' => 'string', 'description' => 'Taxonomic name, e.g. "Rosa canina". Case-sensitive, exact match.'),
+					'illustrated' => array('type' => 'boolean', 'description' => 'When true, return only pages typed Illustration or Foldout. Default false.'),
+					'limit'       => array('type' => 'integer', 'description' => 'Maximum pages (default 50, max 200). Common names run to thousands.'),
+				),
+				'required' => array('name'),
+			),
+		),
+		array(
 			'name'        => 'page_text',
 			'description' => 'Get the OCR text of a single BHL page. Fetched from BHL and cached locally on first use, so the first call for a page is slower.',
 			'inputSchema' => array(
@@ -272,8 +290,7 @@ function callTool($name, $args)
 {
 	switch ($name)
 	{
-		case 'search_titles':   return tool_search_titles($args);
-		case 'search_parts':    return tool_search_parts($args);
+		case 'search':          return tool_search($args);
 		case 'search_creators': return tool_search_creators($args);
 		case 'creator_titles':  return tool_creator_titles($args);
 		case 'title_info':      return tool_title_info($args);
@@ -281,6 +298,8 @@ function callTool($name, $args)
 		case 'title_parts':     return tool_title_parts($args);
 		case 'item_parts':      return tool_item_parts($args);
 		case 'part_info':       return tool_part_info($args);
+		case 'item_pages':      return tool_item_pages($args);
+		case 'name_pages':      return tool_name_pages($args);
 		case 'page_text':       return tool_page_text($args);
 		case 'page_image':      return tool_page_image($args);
 		default:                return null;
@@ -339,7 +358,7 @@ function mcp_none($what)
 //----------------------------------------------------------------------------------------
 // Tool implementations
 
-function tool_search_titles($args)
+function tool_search($args)
 {
 	$err = mcp_need_fts();
 	if ($err !== '') { return $err; }
@@ -347,62 +366,78 @@ function tool_search_titles($args)
 	$text = trim(mcp_arg($args, 'text', ''));
 	if ($text === '') { return 'Provide some text to search for.'; }
 
-	$hits = search_titles($text, mcp_limit($args));
-	if (count($hits) === 0) { return mcp_none('titles matching "' . $text . '"'); }
+	$type = strtolower(trim(mcp_arg($args, 'type', 'all')));
 
-	$lines = array(count($hits) . ' title(s) matching "' . $text . '":', '');
-
-	foreach ($hits as $hit)
+	if (!in_array($type, array('all', 'titles', 'articles')))
 	{
-		$lines[] = 'TitleID ' . $hit->TitleID . ' - ' . mcp_val($hit, 'FullTitle', '(untitled)');
-
-		$snippet = mcp_val($hit, 'Snippet');
-		if ($snippet !== '') { $lines[] = '  ' . $snippet; }
-
-		$lines[] = '  ' . mcp_url('bibliography', $hit->TitleID);
-		$lines[] = '';
+		$type = 'all';
 	}
 
-	return join("\n", $lines);
-}
+	$limit = mcp_limit($args);
 
-function tool_search_parts($args)
-{
-	$err = mcp_need_fts();
-	if ($err !== '') { return $err; }
+	$titles   = ($type === 'articles') ? array() : search_titles($text, $limit);
+	$articles = ($type === 'titles')   ? array() : search_parts($text, $limit);
 
-	$text = trim(mcp_arg($args, 'text', ''));
-	if ($text === '') { return 'Provide some text to search for.'; }
-
-	$hits = search_parts($text, mcp_limit($args));
-	if (count($hits) === 0) { return mcp_none('articles matching "' . $text . '"'); }
-
-	$lines = array(count($hits) . ' article(s) matching "' . $text . '":', '');
-
-	foreach ($hits as $hit)
+	if (count($titles) === 0 && count($articles) === 0)
 	{
-		$lines[] = 'PartID ' . $hit->PartID . ' - ' . mcp_val($hit, 'Title', '(untitled)');
+		return mcp_none('results matching "' . $text . '"');
+	}
 
-		// Container, volume, date and pages read as one citation line, so build it
-		// from whichever of them survived db_get().
-		$cite = array();
-		if (mcp_val($hit, 'ContainerTitle') !== '') { $cite[] = mcp_val($hit, 'ContainerTitle'); }
-		if (mcp_val($hit, 'Volume') !== '')         { $cite[] = 'vol. ' . mcp_val($hit, 'Volume'); }
-		if (mcp_val($hit, 'Date') !== '')           { $cite[] = mcp_val($hit, 'Date'); }
-		if (mcp_val($hit, 'PageRange') !== '')      { $cite[] = 'pp. ' . mcp_val($hit, 'PageRange'); }
+	$lines = array();
 
-		if (count($cite) > 0) { $lines[] = '  ' . join(', ', $cite); }
+	// Two sections rather than one ranked list. bm25 scores are not comparable
+	// across title_fts and part_fts - different corpus sizes (192k vs 405k) and
+	// different column weights - and search_titles widens through AND, OR and
+	// substring passes whose ranks are not comparable even with each other. Sorting
+	// them together would invent an ordering the data does not support.
+	if ($type !== 'articles')
+	{
+		$lines[] = 'Books and journals (' . count($titles) . '):';
 
-		if (mcp_val($hit, 'StartPageID') !== '')
+		if (count($titles) === 0)
 		{
-			$lines[] = '  starts at PageID ' . $hit->StartPageID;
+			$lines[] = '  none';
 		}
 
-		$lines[] = '  ' . mcp_url('part', $hit->PartID);
+		foreach ($titles as $hit)
+		{
+			$lines[] = '  TitleID ' . $hit->TitleID . ' - ' . mcp_val($hit, 'FullTitle', '(untitled)');
+
+			$snippet = mcp_val($hit, 'Snippet');
+			if ($snippet !== '') { $lines[] = '    ' . $snippet; }
+
+			$lines[] = '    ' . mcp_url('bibliography', $hit->TitleID);
+		}
+
 		$lines[] = '';
 	}
 
-	return join("\n", $lines);
+	if ($type !== 'titles')
+	{
+		$lines[] = 'Articles and chapters (' . count($articles) . '):';
+
+		if (count($articles) === 0)
+		{
+			$lines[] = '  none';
+		}
+
+		foreach ($articles as $hit)
+		{
+			$lines[] = '  PartID ' . $hit->PartID . ' - ' . mcp_val($hit, 'Title', '(untitled)');
+
+			$cite = array();
+			if (mcp_val($hit, 'ContainerTitle') !== '') { $cite[] = mcp_val($hit, 'ContainerTitle'); }
+			if (mcp_val($hit, 'Volume') !== '')         { $cite[] = 'vol. ' . mcp_val($hit, 'Volume'); }
+			if (mcp_val($hit, 'Date') !== '')           { $cite[] = mcp_val($hit, 'Date'); }
+			if (mcp_val($hit, 'PageRange') !== '')      { $cite[] = 'pp. ' . mcp_val($hit, 'PageRange'); }
+
+			if (count($cite) > 0) { $lines[] = '    ' . join(', ', $cite); }
+
+			$lines[] = '    ' . mcp_url('part', $hit->PartID);
+		}
+	}
+
+	return implode("\n", $lines);
 }
 
 function tool_search_creators($args)
@@ -492,6 +527,34 @@ function tool_creator_titles($args)
 	return join("\n", $lines);
 }
 
+// get_title_info() and get_part() both attach a 'creator' array of {id, name}
+// objects. It has to be rendered explicitly: the identifier sweeps below skip
+// non-scalars, so without this the authors are silently dropped.
+function mcp_creator_lines($obj)
+{
+	if (!isset($obj->creator) || !is_array($obj->creator))
+	{
+		return array();
+	}
+
+	$lines = array('', 'Creators:');
+
+	foreach ($obj->creator as $creator)
+	{
+		if (!is_object($creator))
+		{
+			continue;
+		}
+
+		$name = isset($creator->name) ? $creator->name : '(unnamed)';
+
+		$lines[] = '  ' . $name
+			. (isset($creator->id) ? ' [CreatorID ' . $creator->id . ', use creator_titles]' : '');
+	}
+
+	return (count($lines) > 2) ? $lines : array();
+}
+
 // A resolvable link for the identifiers that have one. BHL stores the bare value,
 // which is not much use to a reader or to a model trying to follow it up.
 function mcp_identifier_url($name, $value)
@@ -543,6 +606,8 @@ function tool_title_info($args)
 
 	$lines[] = mcp_url('bibliography', $info->TitleID);
 
+	$lines = array_merge($lines, mcp_creator_lines($info));
+
 	// What BHL actually holds, which is a different question from what the title is.
 	// A range alone can badly overstate coverage, so the item count and the number
 	// of undated items go with it.
@@ -583,7 +648,7 @@ function tool_title_info($args)
 	// would otherwise be concatenated into a string and fatal.
 	$skip = array(
 		'TitleID' => true, 'FullTitle' => true, 'ShortTitle' => true,
-		'coverage' => true,
+		'coverage' => true, 'creator' => true,
 	);
 
 	$identifiers = array();
@@ -747,7 +812,7 @@ function tool_title_parts($args)
 
 	if ($more)
 	{
-		$lines[] = 'There are more than this - the list is truncated at ' . $limit . '. Raise limit, or use search_parts to search within them.';
+		$lines[] = 'There are more than this - the list is truncated at ' . $limit . '. Raise limit, or use search with type "articles" to search within them.';
 	}
 
 	$lines[] = '';
@@ -884,6 +949,8 @@ function tool_part_info($args)
 
 	$lines[] = mcp_url('part', $part->PartID);
 
+	$lines = array_merge($lines, mcp_creator_lines($part));
+
 	// Identifiers are attached by get_part() as properties named after BHL's own
 	// IdentifierName, alongside a lower-case 'doi' and 'pages'. Anything that is not
 	// a part column or one of those two is an identifier.
@@ -892,19 +959,35 @@ function tool_part_info($args)
 		'SequenceOrder' => true, 'Title' => true, 'ContainerTitle' => true,
 		'Volume' => true, 'Date' => true, 'PageRange' => true, 'StartPageID' => true,
 		'RightsStatus' => true, 'RightsStatement' => true, 'LicenseUrl' => true,
-		'RightsHolder' => true, 'pages' => true,
+		'RightsHolder' => true, 'pages' => true, 'creator' => true,
 	);
 
 	$identifiers = array();
 
 	foreach ($part as $key => $value)
 	{
-		if (isset($skip[$key]))
+		if (isset($skip[$key]) || is_object($value))
 		{
 			continue;
 		}
 
-		$identifiers[($key === 'doi') ? 'DOI' : $key] = is_array($value) ? $value : array($value);
+		// Same guard as tool_title_info: anything attached later that is not a flat
+		// list of strings must be skipped rather than concatenated, which is fatal.
+		$values  = is_array($value) ? $value : array($value);
+		$scalars = array();
+
+		foreach ($values as $v)
+		{
+			if (!is_array($v) && !is_object($v))
+			{
+				$scalars[] = $v;
+			}
+		}
+
+		if (count($scalars) > 0)
+		{
+			$identifiers[($key === 'doi') ? 'DOI' : $key] = $scalars;
+		}
 	}
 
 	if (count($identifiers) > 0)
@@ -953,6 +1036,120 @@ function tool_part_info($args)
 		// so the last page in reading order is often not the highest PageID.
 		$lines[] = '  ... and ' . (count($pages) - count($show)) . ' more not shown.';
 		$lines[] = '  The last in reading order is PageID ' . $pages[count($pages) - 1] . '.';
+	}
+
+	return implode("\n", $lines);
+}
+
+function tool_item_pages($args)
+{
+	$id = (int)mcp_arg($args, 'item_id', 0);
+	if ($id === 0) { return 'Provide an item_id.'; }
+
+	$limit = (int)mcp_arg($args, 'limit', 200);
+	if ($limit < 1)    { $limit = 200; }
+	if ($limit > 1000) { $limit = 1000; }
+
+	$pages = get_item_pages($id, $limit + 1);
+
+	if (count($pages) === 0)
+	{
+		return 'No pages found for ItemID ' . $id . '. The item may not exist.';
+	}
+
+	$more  = (count($pages) > $limit);
+	$pages = array_slice($pages, 0, $limit);
+
+	$lines = array();
+	$lines[] = count($pages) . ' page(s) in ItemID ' . $id . ', in reading order:';
+	$lines[] = '  ' . mcp_url('item', $id);
+
+	if ($more)
+	{
+		$lines[] = '  Truncated at ' . $limit . '; there are more. Raise limit to see the rest.';
+	}
+
+	$lines[] = '';
+
+	// Reading order, not numeric: PageIDs within an item routinely descend as
+	// SequenceOrder ascends, so this list must be used as given.
+	$lines[] = implode(' ', $pages);
+
+	return implode("\n", $lines);
+}
+
+function tool_name_pages($args)
+{
+	$name = trim(mcp_arg($args, 'name', ''));
+	if ($name === '') { return 'Provide a name.'; }
+
+	$illustrated = (bool)mcp_arg($args, 'illustrated', false);
+
+	$limit = (int)mcp_arg($args, 'limit', 50);
+	if ($limit < 1)   { $limit = 50; }
+	if ($limit > 200) { $limit = 200; }
+
+	$pages = get_pages_with_name($name, $limit + 1, $illustrated);
+
+	if (count($pages) === 0)
+	{
+		// Three different findings here, and they must not read alike: the name is
+		// absent from BHL, or it is present but nothing is illustrated, or the
+		// capitalisation is wrong. pagename uses BINARY collation, so a lower-case
+		// genus matches nothing at all.
+		if ($illustrated)
+		{
+			$any = get_pages_with_name($name, 1, false);
+
+			if (count($any) > 0)
+			{
+				return '"' . $name . '" appears in BHL, but none of its pages are typed as an illustration or foldout. Call again with illustrated false to see the text pages.';
+			}
+		}
+
+		return 'No pages found for "' . $name . '". Matching is exact and case-sensitive, so check the spelling and the capitalisation of the genus.';
+	}
+
+	$more  = (count($pages) > $limit);
+	$pages = array_slice($pages, 0, $limit);
+
+	$lines = array();
+	$lines[] = count($pages) . ($illustrated ? ' illustrated' : '') . ' page(s) for "' . $name . '":';
+
+	if ($more)
+	{
+		$lines[] = 'There are more than this - the list is truncated at ' . $limit . '. Raise limit to see further.';
+	}
+
+	// Grouped by source rather than one flat list. The query orders by title, item
+	// then sequence, so pages from the same work are already adjacent; printing the
+	// reference once per run instead of once per page is what keeps the response
+	// small when a name runs to hundreds of pages.
+	$reference = null;
+
+	foreach ($pages as $page)
+	{
+		$ref = mcp_val($page, 'Reference', '(untitled)');
+
+		if ($ref !== $reference)
+		{
+			$reference = $ref;
+
+			$where = array();
+			if (mcp_val($page, 'PartID') !== '')  { $where[] = 'PartID ' . $page->PartID; }
+			if (mcp_val($page, 'TitleID') !== '') { $where[] = 'TitleID ' . $page->TitleID; }
+
+			$lines[] = '';
+			$lines[] = $ref . (count($where) > 0 ? ' [' . join(', ', $where) . ']' : '');
+		}
+
+		$number = mcp_val($page, 'PageNumber');
+		$types  = mcp_val($page, 'PageTypes');
+
+		$lines[] = '  PageID ' . $page->PageID
+			. ($number !== '' ? ' (p. ' . $number . ')' : '')
+			. ($types !== '' ? ' [' . $types . ']' : '')
+			. ' - ' . mcp_url('page', $page->PageID);
 	}
 
 	return implode("\n", $lines);

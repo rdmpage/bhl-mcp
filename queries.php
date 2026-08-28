@@ -211,6 +211,28 @@ function get_title_info($TitleID)
 		$result = $data[0];
 	}
 	
+	// Creators
+	if ($result)
+	{
+		$sql = "SELECT * FROM creator WHERE TitleID = $TitleID";
+
+		$data = db_get($config['bhlpdo'], $sql);
+		
+		foreach ($data as $row)
+		{
+			if (!isset($result->creator))
+			{
+				$result->creator = [];
+			}
+			
+			$creator = new stdclass;
+			$creator->id = $row->CreatorID;
+			$creator->name = $row->CreatorName;
+			
+			$result->creator[] = $creator;
+		}
+	}
+	
 	// Identifiers
 	if ($result)
 	{
@@ -413,7 +435,31 @@ function get_item_parts($ItemID, $limit = 500)
 }
 
 //----------------------------------------------------------------------------------------
-// Get list of parts in an item
+// Get list of pages in an item
+function get_item_pages($ItemID, $limit = 1000)
+{
+	global $config;
+	
+	$result = [];
+	
+	$ItemID = (int)$ItemID;
+
+	$sql = "SELECT DISTINCT PageID FROM page WHERE ItemID = $ItemID
+		ORDER BY SequenceOrder
+		LIMIT " . (int)$limit;
+
+	$data = db_get($config['bhlpdo'], $sql);
+	
+	foreach ($data as $row)
+	{
+		$result[] = $row->PageID;
+	}
+	
+	return $result;
+}
+
+//----------------------------------------------------------------------------------------
+// Get one part
 function get_part($PartID)
 {
 	global $config;
@@ -438,6 +484,29 @@ function get_part($PartID)
 			$result->{$k} = $v;
 		}
 	}
+	
+	// Creators
+	if ($result)
+	{
+		$sql = "SELECT DISTINCT * FROM partcreator WHERE PartID = $PartID";
+
+		$data = db_get($config['bhlpdo'], $sql);
+		
+		foreach ($data as $row)
+		{
+			if (!isset($result->creator))
+			{
+				$result->creator = [];
+			}
+			
+			$creator = new stdclass;
+			$creator->id = $row->CreatorID;
+			$creator->name = $row->CreatorName;
+			
+			$result->creator[] = $creator;
+		}
+	}
+	
 	
 	// identifiers
 	if ($result)
@@ -504,26 +573,65 @@ function get_pages_collection($namespace, $id)
 
 
 //----------------------------------------------------------------------------------------
-function get_pages_with_name($name, $limit = 100)
+function get_pages_with_name($name, $limit = 100, $illustrated = false)
 {
 	global $config;
 	
 	$pages = [];
 
-	$sql = "SELECT * FROM pagename WHERE NameConfirmed = '" . str_replace("'", "''", $name) . "' LIMIT " . (int)$limit;
+	//$sql = "SELECT * FROM pagename WHERE NameConfirmed = '" . str_replace("'", "''", $name) . "' LIMIT " . (int)$limit;
+	
+	$sql = "SELECT
+  x.PageID,
+  x.PageNumber,
+  x.PageTypes,
+  x.ItemID,
+  x.TitleID,
+  x.PartID,
+  COALESCE(pa.Title, x.FullTitle) AS Reference
+FROM (
+  SELECT
+    p.PageID,
+    MIN(p.PageNumber)                     AS PageNumber,
+    group_concat(DISTINCT p.PageTypeName) AS PageTypes,
+    MIN(p.SequenceOrder)                  AS Seq,
+    i.ItemID,
+    t.TitleID,
+    t.FullTitle,
+    (SELECT MIN(pp.PartID) FROM partpage pp WHERE pp.PageID = p.PageID) AS PartID
+  FROM pagename pn
+  INNER JOIN page  p ON p.PageID = pn.PageID
+  INNER JOIN item  i ON i.ItemID = p.ItemID
+  INNER JOIN title t ON t.TitleID = i.TitleID
+  WHERE pn.NameConfirmed = '" . str_replace("'", "''", $name) . "'
+  GROUP BY p.PageID";
+  
+  	if ($illustrated)
+	{
+  		$sql .= " HAVING SUM(p.PageTypeName IN ('Illustration','Foldout')) > 0";
+	}
+
+$sql .= ") x
+LEFT JOIN part pa ON pa.PartID = x.PartID
+ORDER BY x.TitleID, x.ItemID, x.Seq
+LIMIT " . (int)$limit . ";";
 
 	$data = db_get($config['bhlpdo'], $sql);
 	
 	foreach ($data as $row)
 	{
-		$pages[] = $row->PageID;
+		$page = new stdclass;
+		
+		foreach ($row as $k => $v)
+		{
+			$page->{$k} = $v;
+		}
+	
+		$pages[] = $page;
 	}	
 	
 	return $pages;
 }
-
-
-
 
 //----------------------------------------------------------------------------------------
 // Turn free text into a safe FTS5 MATCH expression.
