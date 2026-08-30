@@ -259,6 +259,30 @@ function getToolDefinitions()
 			),
 		),
 		array(
+			'name'        => 'find_by_identifier',
+			'description' => 'Look up a BHL title, article or creator by an external identifier — a DOI, ISSN, ISBN, OCLC number, Wikidata Q-number, ORCID, VIAF, BioStor or JSTOR id. Use this to go from a citation or an authority record into BHL. Some identifiers are held by more than one kind of entity and some by more than one record, so several results is normal rather than an error. Known namespaces: Abbreviation, BPH, BioStor, CODEN, DDC, DLC, DOI, GPO, ISBN, ISSN, JSTOR, Linking ISSN, MARC001, NAL, NLM, OAI, OCLC, ORCID, ResearchGate Profile, SNAC ARK, Soulsby, TL2, Tropicos, VIAF, Wikidata, WonderFetch, eISSN, eLocator.',
+			'inputSchema' => array(
+				'type'       => 'object',
+				'properties' => array(
+					'namespace'  => array('type' => 'string', 'description' => 'Which kind of identifier, e.g. "DOI", "ISSN", "Wikidata", "ORCID". Case-insensitive.'),
+					'identifier' => array('type' => 'string', 'description' => 'The identifier itself, e.g. "10.4039/Ent23189-9", "0008-347X", "Q4035802". An ORCID may be given bare or as a full https://orcid.org/ URL.'),
+				),
+				'required' => array('namespace', 'identifier'),
+			),
+		),
+		array(
+			'name'        => 'item_coverage',
+			'description' => 'How much of a scanned item has been segmented into articles, and where the gaps are. Reports the unsegmented stretches by position and page type, so it can distinguish front matter from an unindexed run of text from plates at the end that belong to no article. Set image to true for a grid picture of the item, one cell per page, coloured by article.',
+			'inputSchema' => array(
+				'type'       => 'object',
+				'properties' => array(
+					'item_id' => array('type' => 'integer', 'description' => 'BHL ItemID, as returned by title_items.'),
+					'image'   => array('type' => 'boolean', 'description' => 'Also return a grid image, one cell per page, grey for pages in no article. Default false.'),
+				),
+				'required' => array('item_id'),
+			),
+		),
+		array(
 			'name'        => 'page_text',
 			'description' => 'Get the OCR text of a single BHL page. Fetched from BHL and cached locally on first use, so the first call for a page is slower.',
 			'inputSchema' => array(
@@ -309,6 +333,8 @@ function callTool($name, $args)
 		case 'part_info':       return tool_part_info($args);
 		case 'item_pages':      return tool_item_pages($args);
 		case 'name_pages':      return tool_name_pages($args);
+		case 'find_by_identifier': return tool_find_by_identifier($args);
+		case 'item_coverage':   return tool_item_coverage($args);
 		case 'page_text':       return tool_page_text($args);
 		case 'page_image':      return tool_page_image($args);
 		default:                return null;
@@ -1162,6 +1188,305 @@ function tool_name_pages($args)
 	}
 
 	return implode("\n", $lines);
+}
+
+function tool_find_by_identifier($args)
+{
+	$namespace  = trim(mcp_arg($args, 'namespace', ''));
+	$identifier = trim(mcp_arg($args, 'identifier', ''));
+
+	if ($namespace === '')  { return 'Provide a namespace, e.g. "DOI" or "Wikidata".'; }
+	if ($identifier === '') { return 'Provide an identifier.'; }
+
+	$hits = find_by_identifier($namespace, $identifier);
+
+	if (count($hits) === 0)
+	{
+		return 'Nothing in BHL carries ' . $namespace . ' ' . $identifier . '. Either BHL does not hold the work, or it holds it without that identifier recorded - the two are indistinguishable from here, so this is not evidence the work is absent.';
+	}
+
+	// Name the tool that takes each kind of id, so a lookup leads somewhere.
+	$next = array(
+		'title'   => 'title_info',
+		'part'    => 'part_info',
+		'creator' => 'creator_titles',
+	);
+
+	$lines = array(count($hits) . ' match(es) for ' . $namespace . ' ' . $identifier . ':', '');
+
+	foreach ($hits as $hit)
+	{
+		$type = mcp_val($hit, 'type', 'unknown');
+		$id   = mcp_val($hit, 'id');
+
+		$lines[] = ucfirst($type) . ' ' . $id . ' - ' . mcp_val($hit, 'name', '(untitled)');
+
+		if (isset($next[$type]))
+		{
+			$lines[] = '  ' . $next[$type] . ' takes this id';
+		}
+
+		$url = ($type === 'title') ? mcp_url('bibliography', $id)
+			: (($type === 'part') ? mcp_url('part', $id)
+			: (($type === 'creator') ? mcp_url('creator', $id) : ''));
+
+		if ($url !== '')
+		{
+			$lines[] = '  ' . $url;
+		}
+	}
+
+	return implode("\n", $lines);
+}
+
+// Render the coverage map as a grid, one cell per page in reading order, coloured
+// by the first article the page belongs to. Hues step by the golden angle so
+// adjacent articles stay distinguishable however many there are. No thumbnails:
+// fetching one per page would be hundreds of BHL requests and megabytes of base64
+// for a single call.
+function mcp_coverage_grid($map)
+{
+	$total = count($map);
+
+	if ($total === 0)
+	{
+		return null;
+	}
+
+	$cols = 40;
+	$cell = 12;
+	$rows = (int)ceil($total / $cols);
+
+	$image = imagecreatetruecolor($cols * $cell, $rows * $cell);
+
+	imagefill($image, 0, 0, imagecolorallocate($image, 255, 255, 255));
+
+	$grey = imagecolorallocate($image, 229, 229, 229);
+
+	// One colour per part, assigned in the order the parts first appear.
+	$colours = array();
+	$n       = 0;
+
+	foreach ($map as $page)
+	{
+		if (count($page->parts) === 0)
+		{
+			continue;
+		}
+
+		$part = $page->parts[0];
+
+		if (!isset($colours[$part]))
+		{
+			$colours[$part] = mcp_golden_colour($image, $n);
+			$n++;
+		}
+	}
+
+	$i = 0;
+
+	foreach ($map as $page)
+	{
+		$x = ($i % $cols) * $cell;
+		$y = (int)($i / $cols) * $cell;
+
+		$fill = (count($page->parts) > 0) ? $colours[$page->parts[0]] : $grey;
+
+		imagefilledrectangle($image, $x, $y, $x + $cell - 2, $y + $cell - 2, $fill);
+
+		$i++;
+	}
+
+	ob_start();
+	imagepng($image);
+	$png = ob_get_clean();
+
+	imagedestroy($image);
+
+	return $png;
+}
+
+// Nth distinct colour, hue advancing by the golden angle in HSL.
+function mcp_golden_colour($image, $n)
+{
+	$h = fmod($n * 137.5, 360.0) / 360.0;
+	$c = 0.45;
+	$l = 0.72;
+
+	$x = $c * (1 - abs(fmod($h * 6, 2) - 1));
+	$m = $l - $c / 2;
+
+	if     ($h < 1/6) { $r = $c; $g = $x; $b = 0; }
+	elseif ($h < 2/6) { $r = $x; $g = $c; $b = 0; }
+	elseif ($h < 3/6) { $r = 0;  $g = $c; $b = $x; }
+	elseif ($h < 4/6) { $r = 0;  $g = $x; $b = $c; }
+	elseif ($h < 5/6) { $r = $x; $g = 0;  $b = $c; }
+	else              { $r = $c; $g = 0;  $b = $x; }
+
+	return imagecolorallocate($image,
+		(int)(($r + $m) * 255), (int)(($g + $m) * 255), (int)(($b + $m) * 255));
+}
+
+// Describe a run of pages by where it is. The printed page numbers are what a reader
+// can act on, but they are often absent, so fall back to position in the scan.
+function mcp_run_label($pages)
+{
+	$first = $pages[0];
+	$last  = $pages[count($pages) - 1];
+
+	$fn = mcp_val($first, 'PageNumber');
+	$ln = mcp_val($last, 'PageNumber');
+
+	// Only quote a page range when it actually reads as one. Printed numbering
+	// restarts inside a bound volume, so a run can begin at p. 462 and end at p. 335 -
+	// true, but it reads as an error. Fall back to scan position, which always
+	// increases.
+	if ($fn !== '' && $ln !== '' && is_numeric($fn) && is_numeric($ln) && (float)$ln >= (float)$fn)
+	{
+		return 'pp. ' . $fn . '-' . $ln;
+	}
+
+	$sf = mcp_val($first, 'SequenceOrder', '?');
+	$sl = mcp_val($last, 'SequenceOrder', '?');
+
+	$label = 'scan positions ' . $sf . '-' . $sl;
+
+	// Still name the printed pages when there are any - they are what a reader looks
+	// for - but as endpoints rather than a range.
+	if ($fn !== '' || $ln !== '')
+	{
+		$label .= ' (printed ' . ($fn !== '' ? $fn : '?') . ' to ' . ($ln !== '' ? $ln : '?') . ')';
+	}
+
+	return $label;
+}
+
+function tool_item_coverage($args)
+{
+	$id = (int)mcp_arg($args, 'item_id', 0);
+	if ($id === 0) { return 'Provide an item_id.'; }
+
+	$map = item_part_coverage($id);
+
+	if (count($map) === 0)
+	{
+		return 'No pages found for ItemID ' . $id . '. The item may not exist.';
+	}
+
+	$total = count($map);
+
+	$covered = 0;
+	$parts   = array();
+
+	foreach ($map as $page)
+	{
+		if (count($page->parts) > 0)
+		{
+			$covered++;
+
+			foreach ($page->parts as $part)
+			{
+				$parts[$part] = true;
+			}
+		}
+	}
+
+	$lines = array();
+	$lines[] = 'ItemID ' . $id . ' - ' . $total . ' pages, ' . $covered . ' in '
+		. count($parts) . ' article(s), ' . round(100 * $covered / $total) . '% segmented';
+	$lines[] = mcp_url('item', $id);
+
+	if ($covered === 0)
+	{
+		$lines[] = '';
+		$lines[] = 'Nothing in this item has been segmented into articles. That is not the same as the item being empty - every page is still readable with page_text.';
+	}
+
+	// Runs of consecutive unsegmented pages. This is what makes the answer useful:
+	// "unsegmented" as a percentage says nothing about whether it is front matter,
+	// an unindexed run of articles, or plates at the back.
+	$runs    = array();
+	$current = array();
+
+	foreach ($map as $page)
+	{
+		if (count($page->parts) === 0)
+		{
+			$current[] = $page;
+		}
+		else if (count($current) > 0)
+		{
+			$runs[]  = $current;
+			$current = array();
+		}
+	}
+
+	if (count($current) > 0)
+	{
+		$runs[] = $current;
+	}
+
+	if (count($runs) > 0)
+	{
+		// Longest first - a 200-page gap matters and a 1-page one usually does not.
+		usort($runs, function ($a, $b) { return count($b) - count($a); });
+
+		$lines[] = '';
+		$lines[] = 'Unsegmented stretches (' . ($total - $covered) . ' pages in ' . count($runs) . ' run(s)), longest first:';
+
+		foreach (array_slice($runs, 0, 12) as $run)
+		{
+			$types = array();
+
+			foreach ($run as $page)
+			{
+				foreach ($page->PageTypes as $type)
+				{
+					if ($type !== '')
+					{
+						$types[$type] = isset($types[$type]) ? $types[$type] + 1 : 1;
+					}
+				}
+			}
+
+			arsort($types);
+
+			$described = array();
+
+			foreach (array_slice($types, 0, 4, true) as $type => $n)
+			{
+				$described[] = $type . ' ' . $n;
+			}
+
+			$lines[] = '  ' . count($run) . ' page(s), ' . mcp_run_label($run)
+				. (count($described) > 0 ? ' - ' . join(', ', $described) : '');
+		}
+
+		if (count($runs) > 12)
+		{
+			$lines[] = '  ... and ' . (count($runs) - 12) . ' shorter run(s).';
+		}
+	}
+
+	$text = implode("\n", $lines);
+
+	if (!mcp_arg($args, 'image', false))
+	{
+		return $text;
+	}
+
+	$png = mcp_coverage_grid($map);
+
+	if ($png === null || $png === false)
+	{
+		return $text . "\n\n(the grid image could not be generated)";
+	}
+
+	return array(
+		array('type' => 'image', 'data' => base64_encode($png), 'mimeType' => 'image/png'),
+		array('type' => 'text', 'text' => $text
+			. "\n\nGrid: one cell per page in reading order, 40 per row, coloured by article; grey is in no article."),
+	);
 }
 
 function tool_page_text($args)

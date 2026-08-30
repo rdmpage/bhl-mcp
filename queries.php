@@ -501,7 +501,7 @@ function get_part($PartID)
 	// Creators
 	if ($result)
 	{
-		$sql = "SELECT DISTINCT * FROM partcreator WHERE PartID = $PartID";
+		$sql = "SELECT * FROM partcreator WHERE PartID = $PartID";
 
 		$data = db_get($config['bhlpdo'], $sql);
 		
@@ -575,14 +575,255 @@ function get_part($PartID)
 	return $result;
 }
 
+//----------------------------------------------------------------------------------------
+function normalise_identifier_name($namespace)
+{
+	$namespace = strtoupper($namespace);
+	
+	switch ($namespace)
+	{
+		// Title case
+		case 'ABBREVIATION':
+		case 'SOULSBY':
+		case 'TROPICOS':
+		case 'WIKIDATA':
+			$namespace = mb_convert_case($namespace, MB_CASE_TITLE);
+			break;
+			
+		case 'BIOSTOR':
+			$namespace = 'BioStor';
+			break;
+
+		case 'ELOCATOR':
+			$namespace = 'eLocator';
+			break;
+			
+		// special
+		case 'LINKING ISSN':
+			$namespace = 'Linking ISSN';
+			break;
+
+		case 'RESEARCHGATE PROFILE':
+			$namespace = 'ResearchGate Profile';
+			break;
+
+		case 'WONDERFETCH':
+			$namespace = 'WonderFetch';
+			break;
+
+		case 'EISSN':
+			$namespace = 'eISSN';
+			break;
+			
+		// UPPER case
+		case 'BPH':
+		case 'CODEN':
+		case 'DDC':
+		case 'DLC':
+		case 'GPO':
+		case 'ISBN':
+		case 'ISSN':
+		case 'JSTOR':
+		case 'MARC001':
+		case 'NAL':
+		case 'NLM':
+		case 'OAI':
+		case 'OCLC':
+		case 'ORCID':
+		case 'SNAC ARK':
+		case 'TL2':
+		case 'VIAF':
+		default:
+			break;
+	}
+			
+	return $namespace;
+}	
+
+//----------------------------------------------------------------------------------------
+function normalise_identifier_value($namespace, $value)
+{
+	$namespace = strtoupper($namespace);
+	
+	switch ($namespace)
+	{
+		case 'ORCID':
+			if (preg_match('/^\d+/', $value))
+			{
+				$value = 'https://orcid.org/' . $value;
+			}
+			break;
+	
+		default:
+			break;
+	}
+	
+	return $value;
+}
 
 //----------------------------------------------------------------------------------------
 
-function get_pages_collection($namespace, $id)
+// Quote a value for a SQL string literal. SQLite has no backslash escape, so
+// doubling the apostrophe is the whole job.
+function sql_string($value)
 {
-
-
+	return "'" . str_replace("'", "''", $value) . "'";
 }
+
+//----------------------------------------------------------------------------------------
+function find_by_identifier($namespace, $identifier)
+{
+	global $config;
+
+	$result = array();
+
+	$namespace = normalise_identifier_name($namespace);
+
+	// Every source is queried, rather than routing by namespace. Eight namespaces
+	// span more than one kind of entity - Wikidata is on titles, parts AND creators;
+	// DLC is on titles and creators; ISSN, ISBN, OAI, OCLC, Soulsby and TL2 are on
+	// titles and parts - so any routing table gets it wrong, and stopping at the
+	// first hit hides the others. Four indexed lookups cost nothing.
+	$name  = sql_string($namespace);
+	$value = sql_string($identifier);
+
+	// DOIs have their own table. EntityType must be in the WHERE clause: a Part DOI
+	// whose EntityID is also a valid TitleID would otherwise join to the title and
+	// report that title's name (10.1002/mmnd.18580020305 is Part 210183, and Title
+	// 210183 exists too).
+	$queries = array(
+		"SELECT EntityID AS id, 'title' AS type, FullTitle AS name
+		 FROM doi INNER JOIN title ON doi.EntityID = title.TitleID
+		 WHERE EntityType='Title' AND DOI=" . $value,
+
+		"SELECT EntityID AS id, 'part' AS type, Title AS name
+		 FROM doi INNER JOIN part ON doi.EntityID = part.PartID
+		 WHERE EntityType='Part' AND DOI=" . $value,
+
+		"SELECT TitleID AS id, 'title' AS type, FullTitle AS name
+		 FROM titleidentifier INNER JOIN title USING(TitleID)
+		 WHERE IdentifierName=" . $name . " AND IdentifierValue=" . $value . "
+		 GROUP BY TitleID",
+
+		"SELECT PartID AS id, 'part' AS type, Title AS name
+		 FROM partidentifier INNER JOIN part USING(PartID)
+		 WHERE IdentifierName=" . $name . " AND IdentifierValue=" . $value . "
+		 GROUP BY PartID",
+
+		// GROUP BY the creator: the creator table has one row per title they are
+		// credited on, so without it a prolific author comes back hundreds of times
+		// (VIAF 124245113 returned 813 identical rows).
+		"SELECT creatoridentifier.CreatorID AS id, 'creator' AS type, CreatorName AS name
+		 FROM creatoridentifier INNER JOIN creator ON creatoridentifier.CreatorID = creator.CreatorID
+		 WHERE IdentifierName=" . $name . "
+		 AND IdentifierValue=" . sql_string(normalise_identifier_value($namespace, $identifier)) . "
+		 GROUP BY creatoridentifier.CreatorID",
+	);
+
+	// Only run the DOI lookups for a DOI, and skip them otherwise - the doi table has
+	// no IdentifierName to filter on, so a non-DOI value would match nothing anyway.
+	if ($namespace != 'DOI')
+	{
+		$queries = array_slice($queries, 2);
+	}
+
+	$seen = array();
+
+	foreach ($queries as $sql)
+	{
+		foreach (db_get($config['bhlpdo'], $sql) as $row)
+		{
+			$key = $row->type . '-' . $row->id;
+
+			if (!isset($seen[$key]))
+			{
+				$seen[$key] = true;
+				$result[]   = $row;
+			}
+		}
+	}
+
+	return $result;
+}
+
+
+function title_part_coverage() {}
+
+//----------------------------------------------------------------------------------------
+function item_part_coverage($ItemID)
+{
+	global $config;
+	
+	$ItemID = (int)$ItemID;
+	
+	$page_map = [];
+
+	// One row per page, in reading order. Grouped because page holds a row per
+	// PageTypeName and 4.77M PageIDs carry more than one - a page can be both Text
+	// and Illustration. Ungrouped, every multi-typed page would appear twice.
+	//
+	// No LIMIT: 3,933 items run past 1,000 pages and the largest is 4,788, and a
+	// truncated map gives a coverage figure against the wrong denominator.
+	$sql = "SELECT PageID,
+		MIN(PageNumber)                     AS PageNumber,
+		group_concat(DISTINCT PageTypeName) AS PageTypes,
+		MIN(SequenceOrder)                  AS SequenceOrder
+		FROM page
+		WHERE ItemID = $ItemID
+		GROUP BY PageID
+		ORDER BY MIN(SequenceOrder)";
+
+	$data = db_get($config['bhlpdo'], $sql);
+	
+	foreach ($data as $row)
+	{
+		$page = new stdclass;
+		
+		$page->PageID        = $row->PageID;
+		$page->PageNumber    = isset($row->PageNumber) ? $row->PageNumber : '';
+		$page->PageTypes     = isset($row->PageTypes) ? explode(',', $row->PageTypes) : [];
+		$page->SequenceOrder = isset($row->SequenceOrder) ? $row->SequenceOrder : null;
+		$page->parts         = [];
+		
+		$page_map[$row->PageID] = $page;
+	}
+	
+	// parts in item
+	$sql = "SELECT PageID, part.PartID
+FROM part
+INNER JOIN partpage USING(PartID)
+WHERE part.ItemID = $ItemID";	
+
+	$data = db_get($config['bhlpdo'], $sql);
+	
+	foreach ($data as $row)
+	{
+		// Only annotate pages already in the map. Assigning to a missing key would
+		// append it at the end, out of reading order, and the order is the whole
+		// point of this array.
+		if (isset($page_map[$row->PageID]))
+		{
+			$page_map[$row->PageID]->parts[] = $row->PartID;
+		}
+	}	
+
+	return $page_map;
+}
+
+
+
+
+
+//----------------------------------------------------------------------------------------
+
+
+
+
+
+//----------------------------------------------------------------------------------------
+
+
+
 
 
 //----------------------------------------------------------------------------------------
