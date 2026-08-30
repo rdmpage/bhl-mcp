@@ -421,14 +421,21 @@ function get_item_parts($ItemID, $limit = 500)
 	
 	$ItemID = (int)$ItemID;
 
-	// SequenceOrder, not Date: within a single volume every part carries the same
-	// date, so ordering by it is arbitrary. SequenceOrder is the order they appear
-	// in the volume, which makes this a table of contents. One item has 580 parts,
-	// hence the cap.
-	$sql = "SELECT part.PartID, part.Title, part.Volume, part.Date, part.PageRange, part.StartPageID
+	// Order by where the part's first page actually sits in the scan, not by
+	// part.SequenceOrder. That column is an edit or ingest order, not a position:
+	// for 4,093 of the 19,443 items with more than one part the two disagree, and
+	// item 175550 comes back as XVI, XVII, V, XXII, XXIII, XVIII, XIV, II, IV, III,
+	// XV, I when sorted by it. Date is no use either - within one volume every part
+	// shares it.
+	//
+	// LEFT JOIN so a part whose StartPageID is missing, or points outside this item,
+	// still appears; those sort to the end. One item has 580 parts, hence the cap.
+	$sql = "SELECT part.PartID, part.Title, part.Volume, part.Date, part.PageRange, part.StartPageID,
+		page.SequenceOrder AS StartPosition
 		FROM part
-		WHERE ItemID = $ItemID
-		ORDER BY part.SequenceOrder
+		LEFT JOIN page ON page.PageID = part.StartPageID AND page.ItemID = part.ItemID
+		WHERE part.ItemID = $ItemID
+		ORDER BY page.SequenceOrder IS NULL, page.SequenceOrder, part.SequenceOrder
 		LIMIT " . (int)$limit;
 
 	$data = db_get($config['bhlpdo'], $sql);

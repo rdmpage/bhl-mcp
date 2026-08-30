@@ -951,7 +951,13 @@ function tool_item_parts($args)
 
 		if (mcp_val($part, 'StartPageID') !== '')
 		{
-			$lines[] = '  starts at PageID ' . $part->StartPageID . ' (use page_text to read it)';
+			// The scan position is what locates the part in the volume; PageIDs are not
+			// in reading order and cannot be compared.
+			$position = mcp_val($part, 'StartPosition');
+
+			$lines[] = '  starts at PageID ' . $part->StartPageID
+				. ($position !== '' ? ', scan position ' . $position : '')
+				. ' (use page_text to read it)';
 		}
 
 		$lines[] = '  ' . mcp_url('part', $part->PartID);
@@ -1400,6 +1406,56 @@ function tool_item_coverage($args)
 	{
 		$lines[] = '';
 		$lines[] = 'Nothing in this item has been segmented into articles. That is not the same as the item being empty - every page is still readable with page_text.';
+	}
+
+	// Where each article sits, as a position and a length. Without this the only way
+	// to place a part in the volume is to call item_pages and search for its
+	// StartPageID - which fails on items past the 1000-page cap, and invites sorting
+	// by PageID, which is not reading order.
+	if (count($parts) > 0)
+	{
+		$extent   = array();
+		$position = 0;
+
+		foreach ($map as $page)
+		{
+			$position++;
+
+			foreach ($page->parts as $part)
+			{
+				if (!isset($extent[$part]))
+				{
+					$extent[$part] = array('from' => $position, 'to' => $position, 'pages' => 0);
+				}
+
+				$extent[$part]['to'] = $position;
+				$extent[$part]['pages']++;
+			}
+		}
+
+		uasort($extent, function ($a, $b) { return $a['from'] - $b['from']; });
+
+		$lines[] = '';
+		$lines[] = 'Articles, by scan position:';
+
+		foreach ($extent as $part => $e)
+		{
+			$span = $e['to'] - $e['from'] + 1;
+
+			$line = '  PartID ' . $part . ' - starts at position ' . $e['from']
+				. ', ' . $e['pages'] . ' page(s)';
+
+			// A part whose pages span far more positions than it has is not
+			// contiguous: almost always plates bound at the end of the volume but
+			// belonging to an article printed earlier. Worth naming, because the
+			// from-to range on its own reads as an error.
+			if ($span > $e['pages'])
+			{
+				$line .= ', not contiguous - also has pages as late as position ' . $e['to'];
+			}
+
+			$lines[] = $line;
+		}
 	}
 
 	// Runs of consecutive unsegmented pages. This is what makes the answer useful:
