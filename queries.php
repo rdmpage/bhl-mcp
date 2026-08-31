@@ -893,6 +893,134 @@ function item_orphan_pages($ItemID, $types = [])
 
 
 //----------------------------------------------------------------------------------------
+// Dashboard statistics.
+//
+// Every count is COUNT(DISTINCT id): the tables carry duplicate rows for real
+// reasons - 9,050 items are bound with more than one title, a page has a row per
+// PageTypeName, 14 parts have a stray null-ItemID row - so COUNT(*) overstates all
+// of them.
+//
+// Every metric here runs in well under a second against the indexes, so nothing is
+// precomputed. If a metric is ever added that does not, it belongs in a separate
+// stats database rather than here.
+function bhl_statistics($metric, $options = array())
+{
+	global $config;
+
+	$contributor = isset($options['contributor']) ? trim($options['contributor']) : '';
+	$limit       = isset($options['limit']) ? (int)$options['limit'] : 0;
+
+	switch ($metric)
+	{
+		case 'counts':
+			// Creators are the union of title-level and article-level credits. There
+			// is no master creator table: creator holds 79,892 and partcreator holds
+			// 171,732, overlapping by only 10,149, so either alone badly undercounts.
+			$sql = "SELECT
+				(SELECT COUNT(DISTINCT TitleID) FROM title) AS Titles,
+				(SELECT COUNT(DISTINCT ItemID)  FROM item)  AS Items,
+				(SELECT COUNT(DISTINCT PartID)  FROM part)  AS Parts,
+				(SELECT COUNT(DISTINCT PageID)  FROM page)  AS Pages,
+				(SELECT COUNT(*) FROM (SELECT CreatorID FROM creator
+				                       UNION
+				                       SELECT CreatorID FROM partcreator)) AS Creators";
+			break;
+
+		case 'items_by_year':
+			// GROUP BY the expression, not the alias. item has its own Year column
+				// (the publication year) and SQLite binds the column in preference to
+				// the alias, so "GROUP BY Year" silently groups by publication year -
+				// 525 groups instead of 20.
+			$sql = "SELECT substr(CreationDate,1,4) AS AddedYear, COUNT(DISTINCT ItemID) AS Items
+				FROM item"
+				. ($contributor !== '' ? " WHERE InstitutionName = " . sql_string($contributor) : '')
+				. " GROUP BY substr(CreationDate,1,4) ORDER BY substr(CreationDate,1,4)";
+			break;
+
+		case 'items_by_contributor':
+			$sql = "SELECT InstitutionName AS Contributor, COUNT(DISTINCT ItemID) AS Items
+				FROM item GROUP BY InstitutionName ORDER BY Items DESC"
+				. ($limit > 0 ? " LIMIT " . $limit : '');
+			break;
+
+		case 'items_by_year_contributor':
+			// The cap is on contributors, not rows: cutting rows would lop the tail off
+			// whichever years happened to sort last and silently understate them. This
+			// keeps every year for the largest N institutions. Ungrouped there are 465
+			// of them, which is 1,905 rows and an unreadable chart.
+			$where = ($contributor !== '') ? " WHERE InstitutionName = " . sql_string($contributor) : '';
+
+			if ($contributor === '' && $limit > 0)
+			{
+				$where = " WHERE InstitutionName IN (
+					SELECT InstitutionName FROM item
+					GROUP BY InstitutionName
+					ORDER BY COUNT(DISTINCT ItemID) DESC
+					LIMIT " . $limit . ")";
+			}
+
+			$sql = "SELECT substr(CreationDate,1,4) AS AddedYear, InstitutionName AS Contributor,
+				COUNT(DISTINCT ItemID) AS Items
+				FROM item" . $where
+				. " GROUP BY substr(CreationDate,1,4), InstitutionName
+				   ORDER BY substr(CreationDate,1,4), Items DESC";
+			break;
+
+		case 'parts_by_contributor':
+			$sql = "SELECT ContributorName AS Contributor, COUNT(DISTINCT PartID) AS Parts
+				FROM part GROUP BY ContributorName ORDER BY Parts DESC"
+				. ($limit > 0 ? " LIMIT " . $limit : '');
+			break;
+
+		case 'part_dois_by_year':
+			$sql = "SELECT substr(CreationDate,1,4) AS AddedYear, COUNT(DISTINCT EntityID) AS DOIs
+				FROM doi WHERE EntityType='Part'
+				GROUP BY substr(CreationDate,1,4) ORDER BY substr(CreationDate,1,4)";
+			break;
+
+		case 'dois_by_year_type':
+			$sql = "SELECT substr(CreationDate,1,4) AS AddedYear, EntityType, COUNT(DISTINCT EntityID) AS DOIs
+				FROM doi GROUP BY substr(CreationDate,1,4), EntityType
+				ORDER BY substr(CreationDate,1,4)";
+			break;
+
+		case 'creator_identifiers':
+			$sql = "SELECT IdentifierName AS Identifier, COUNT(DISTINCT CreatorID) AS Creators
+				FROM creatoridentifier GROUP BY IdentifierName ORDER BY Creators DESC";
+			break;
+
+		case 'creator_identifiers_by_year':
+			$sql = "SELECT substr(CreationDate,1,4) AS AddedYear, IdentifierName AS Identifier,
+				COUNT(DISTINCT CreatorID) AS Creators
+				FROM creatoridentifier GROUP BY substr(CreationDate,1,4), IdentifierName
+				ORDER BY substr(CreationDate,1,4)";
+			break;
+
+		case 'item_licences':
+			// Deliberately NOT normalised. BHL stores the same Creative Commons
+			// licence under both http and https, with and without a trailing slash;
+			// showing that as-is is the point, because it is a finding about the data.
+			$sql = "SELECT COALESCE(LicenseType,'(none recorded)') AS Licence,
+				COUNT(DISTINCT ItemID) AS Items
+				FROM item GROUP BY LicenseType ORDER BY Items DESC";
+			break;
+
+		case 'item_copyright_status':
+			// 297 distinct strings, equally unnormalised and equally deliberate.
+			$sql = "SELECT COALESCE(CopyrightStatus,'(none recorded)') AS Status,
+				COUNT(DISTINCT ItemID) AS Items
+				FROM item GROUP BY CopyrightStatus ORDER BY Items DESC"
+				. ($limit > 0 ? " LIMIT " . $limit : '');
+			break;
+
+		default:
+			return null;
+	}
+
+	return db_get($config['bhlpdo'], $sql);
+}
+
+//----------------------------------------------------------------------------------------
 function get_pages_with_name($name, $limit = 100, $illustrated = false)
 {
 	global $config;

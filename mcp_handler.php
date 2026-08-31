@@ -300,6 +300,30 @@ function getToolDefinitions()
 			),
 		),
 		array(
+			'name'        => 'statistics',
+			'description' => 'Aggregate statistics about BHL as a whole, for answering questions about its size, growth and coverage. Returns a table by default, or a ready-made Vega-Lite chart specification with format "vega". Counts are of distinct entities: the underlying tables carry duplicate rows (an item bound with two titles, a page with two page types), so raw row counts overstate everything.',
+			'inputSchema' => array(
+				'type'       => 'object',
+				'properties' => array(
+					'metric' => array(
+						'type' => 'string',
+						'enum' => array(
+							'counts', 'items_by_year', 'items_by_contributor',
+							'items_by_year_contributor', 'parts_by_contributor',
+							'part_dois_by_year', 'dois_by_year_type',
+							'creator_identifiers', 'creator_identifiers_by_year',
+							'item_licences', 'item_copyright_status',
+						),
+						'description' => 'counts: how many titles, items, parts, pages and creators. items_by_year: items added per year. items_by_contributor / items_by_year_contributor: which institutions contributed, and when. parts_by_contributor: who segmented the articles. part_dois_by_year / dois_by_year_type: DOI minting over time. creator_identifiers / creator_identifiers_by_year: reconciliation to ORCID, VIAF, Wikidata and others. item_licences and item_copyright_status: rights, returned exactly as BHL records them.',
+					),
+					'contributor' => array('type' => 'string', 'description' => 'Optional exact institution name to filter the item metrics to, e.g. "BHL Australia". Get the names from items_by_contributor.'),
+					'limit'       => array('type' => 'integer', 'description' => 'Cap the number of rows for the ranked metrics. Default 30 for a chart, unlimited for a table.'),
+					'format'      => array('type' => 'string', 'enum' => array('table', 'vega'), 'description' => 'table (default) for the numbers, vega for a Vega-Lite specification with the data inlined.'),
+				),
+				'required' => array('metric'),
+			),
+		),
+		array(
 			'name'        => 'page_text',
 			'description' => 'Get the OCR text of a single BHL page. Fetched from BHL and cached locally on first use, so the first call for a page is slower.',
 			'inputSchema' => array(
@@ -353,6 +377,7 @@ function callTool($name, $args)
 		case 'find_by_identifier': return tool_find_by_identifier($args);
 		case 'item_coverage':   return tool_item_coverage($args);
 		case 'item_orphan_pages': return tool_item_orphan_pages($args);
+		case 'statistics':      return tool_statistics($args);
 		case 'page_text':       return tool_page_text($args);
 		case 'page_image':      return tool_page_image($args);
 		default:                return null;
@@ -1669,6 +1694,238 @@ function mcp_type_list($types)
 	}
 
 	return join(', ', $out);
+}
+
+// How each metric wants to be drawn, and which fields carry what.
+function mcp_chart_spec($metric)
+{
+	$charts = array(
+		'counts'                      => array('mark' => 'bar', 'x' => 'Entity',      'y' => 'Count',    'xtype' => 'nominal',  'horizontal' => true,  'title' => 'BHL by entity type'),
+		'items_by_year'               => array('mark' => 'bar', 'x' => 'AddedYear',   'y' => 'Items',    'xtype' => 'ordinal',  'horizontal' => false, 'title' => 'Items added per year'),
+		'items_by_contributor'        => array('mark' => 'bar', 'x' => 'Contributor', 'y' => 'Items',    'xtype' => 'nominal',  'horizontal' => true,  'title' => 'Items by contributing institution'),
+		'items_by_year_contributor'   => array('mark' => 'bar', 'x' => 'AddedYear',   'y' => 'Items',    'xtype' => 'ordinal',  'horizontal' => false, 'colour' => 'Contributor', 'title' => 'Items added per year, by contributor'),
+		'parts_by_contributor'        => array('mark' => 'bar', 'x' => 'Contributor', 'y' => 'Parts',    'xtype' => 'nominal',  'horizontal' => true,  'title' => 'Articles by contributor'),
+		'part_dois_by_year'           => array('mark' => 'bar', 'x' => 'AddedYear',   'y' => 'DOIs',     'xtype' => 'ordinal',  'horizontal' => false, 'title' => 'DOIs minted for articles, per year'),
+		'dois_by_year_type'           => array('mark' => 'bar', 'x' => 'AddedYear',   'y' => 'DOIs',     'xtype' => 'ordinal',  'horizontal' => false, 'colour' => 'EntityType', 'title' => 'DOIs minted per year, by entity type'),
+		'creator_identifiers'         => array('mark' => 'bar', 'x' => 'Identifier',  'y' => 'Creators', 'xtype' => 'nominal',  'horizontal' => true,  'title' => 'Creators reconciled, by identifier'),
+		'creator_identifiers_by_year' => array('mark' => 'bar', 'x' => 'AddedYear',   'y' => 'Creators', 'xtype' => 'ordinal',  'horizontal' => false, 'colour' => 'Identifier', 'title' => 'Creator identifiers added per year'),
+		'item_licences'               => array('mark' => 'bar', 'x' => 'Licence',     'y' => 'Items',    'xtype' => 'nominal',  'horizontal' => true,  'title' => 'Items by licence, as recorded'),
+		'item_copyright_status'       => array('mark' => 'bar', 'x' => 'Status',      'y' => 'Items',    'xtype' => 'nominal',  'horizontal' => true,  'title' => 'Items by copyright status, as recorded'),
+	);
+
+	return isset($charts[$metric]) ? $charts[$metric] : null;
+}
+
+// Build a Vega-Lite spec with the rows inlined, so it can be rendered as it stands.
+function mcp_vega_lite($metric, $rows, $note = '')
+{
+	$chart = mcp_chart_spec($metric);
+
+	if ($chart === null)
+	{
+		return null;
+	}
+
+	// Horizontal for anything with long category labels - institution and licence
+	// names run to eighty characters and are unreadable on a rotated axis.
+	$category = array(
+		'field' => $chart['x'],
+		'type'  => $chart['xtype'],
+		'title' => $chart['x'],
+	);
+
+	if ($chart['horizontal'])
+	{
+		$category['sort'] = '-x';
+	}
+
+	$measure = array('field' => $chart['y'], 'type' => 'quantitative', 'title' => $chart['y']);
+
+	$encoding = $chart['horizontal']
+		? array('y' => $category, 'x' => $measure)
+		: array('x' => $category, 'y' => $measure);
+
+	if (isset($chart['colour']))
+	{
+		$encoding['color'] = array('field' => $chart['colour'], 'type' => 'nominal', 'title' => $chart['colour']);
+		$encoding['tooltip'] = array(
+			array('field' => $chart['x'], 'type' => $chart['xtype']),
+			array('field' => $chart['colour'], 'type' => 'nominal'),
+			array('field' => $chart['y'], 'type' => 'quantitative'),
+		);
+	}
+
+	$spec = array(
+		'$schema'     => 'https://vega.github.io/schema/vega-lite/v5.json',
+		'title'       => $chart['title'] . ($note !== '' ? ' (' . $note . ')' : ''),
+		'description' => 'Biodiversity Heritage Library, data as of ' . mcp_data_vintage(),
+		'data'        => array('values' => $rows),
+		'mark'        => array('type' => $chart['mark'], 'tooltip' => true),
+		'encoding'    => $encoding,
+		'width'       => $chart['horizontal'] ? 400 : 560,
+		'height'      => $chart['horizontal'] ? max(160, 18 * count($rows)) : 300,
+	);
+
+	return $spec;
+}
+
+// The dumps carry their own date. Any number here describes that snapshot, not today,
+// and a chart with no date on it will be read as current.
+function mcp_data_vintage()
+{
+	static $vintage = null;
+
+	if ($vintage === null)
+	{
+		$vintage = 'unknown date';
+
+		$path = dirname(__FILE__) . '/bhldata/last-updated.txt';
+
+		if (file_exists($path))
+		{
+			if (preg_match('/Last Updated:\s*(.+)/', file_get_contents($path), $m))
+			{
+				$vintage = trim($m[1]);
+			}
+		}
+	}
+
+	return $vintage;
+}
+
+function tool_statistics($args)
+{
+	$metric = trim(mcp_arg($args, 'metric', ''));
+	if ($metric === '') { return 'Provide a metric.'; }
+
+	$format = strtolower(trim(mcp_arg($args, 'format', 'table')));
+	if (!in_array($format, array('table', 'vega'))) { $format = 'table'; }
+
+	$limit = (int)mcp_arg($args, 'limit', 0);
+
+	// A chart with 465 bars is unreadable and a spec with 1,905 rows inlined is a
+	// large response, so cap by default when drawing. Tables are left whole.
+	if ($limit <= 0 && $format === 'vega' && $metric !== 'counts')
+	{
+		$limit = 30;
+	}
+
+	$options = array(
+		'contributor' => mcp_arg($args, 'contributor', ''),
+		'limit'       => $limit,
+	);
+
+	$rows = bhl_statistics($metric, $options);
+
+	if ($rows === null)
+	{
+		return 'Unknown metric: ' . $metric;
+	}
+
+	if (count($rows) === 0)
+	{
+		$who = trim(mcp_arg($args, 'contributor', ''));
+
+		return 'No data for ' . $metric
+			. ($who !== '' ? '. No institution is named exactly "' . $who . '" in the item records. Note the two vocabularies differ: item.InstitutionName is the library that holds and scanned the volume, while parts_by_contributor lists who segmented the articles, and a name can appear in one and not the other - "BHL Australia" contributes articles but its volumes are filed under the individual member libraries. Get the exact names from items_by_contributor.' : '.');
+	}
+
+	// counts comes back as one row of five columns; a chart wants one row per entity.
+	if ($metric === 'counts')
+	{
+		$flat = array();
+
+		foreach ($rows[0] as $entity => $count)
+		{
+			$flat[] = array('Entity' => $entity, 'Count' => (int)$count);
+		}
+
+		$rows = $flat;
+	}
+	else
+	{
+		// db_get() returns objects and omits empty columns; normalise to arrays with
+		// every field present, or Vega-Lite sees a ragged dataset.
+		$fields = array();
+
+		foreach ($rows as $row)
+		{
+			foreach ($row as $k => $v) { $fields[$k] = true; }
+		}
+
+		$fields = array_keys($fields);
+		$flat   = array();
+
+		foreach ($rows as $row)
+		{
+			$out = array();
+
+			foreach ($fields as $f)
+			{
+				$v = isset($row->{$f}) ? $row->{$f} : null;
+
+				$out[$f] = ($v !== null && is_numeric($v)) ? $v + 0 : $v;
+			}
+
+			$flat[] = $out;
+		}
+
+		$rows = $flat;
+	}
+
+	$truncated = ($limit > 0 && count($rows) >= $limit) ? 'top ' . $limit : '';
+
+	if ($format === 'vega')
+	{
+		$spec = mcp_vega_lite($metric, $rows, $truncated);
+
+		if ($spec === null)
+		{
+			return 'No chart is defined for ' . $metric . '.';
+		}
+
+		$lines = array();
+		$lines[] = 'Vega-Lite specification for ' . $metric . ', ' . count($rows) . ' row(s), data inlined.';
+		$lines[] = 'BHL data as of ' . mcp_data_vintage() . '.';
+
+		if ($truncated !== '')
+		{
+			$lines[] = 'Showing the ' . $truncated . ' only - raise limit for more.';
+		}
+
+		$lines[] = '';
+		$lines[] = json_encode($spec, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+		return implode("\n", $lines);
+	}
+
+	// Table.
+	$fields = array_keys($rows[0]);
+
+	$lines = array();
+	$lines[] = $metric . ' - ' . count($rows) . ' row(s). BHL data as of ' . mcp_data_vintage() . '.';
+
+	if ($truncated !== '')
+	{
+		$lines[] = 'Showing the ' . $truncated . ' only - raise limit for more.';
+	}
+
+	$lines[] = '';
+	$lines[] = join("\t", $fields);
+
+	foreach ($rows as $row)
+	{
+		$out = array();
+
+		foreach ($fields as $f)
+		{
+			$out[] = ($row[$f] === null) ? '' : $row[$f];
+		}
+
+		$lines[] = join("\t", $out);
+	}
+
+	return implode("\n", $lines);
 }
 
 function tool_page_text($args)
