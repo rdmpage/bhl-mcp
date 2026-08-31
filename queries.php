@@ -937,6 +937,35 @@ function bhl_statistics($metric, $options = array())
 				. " GROUP BY substr(CreationDate,1,4) ORDER BY substr(CreationDate,1,4)";
 			break;
 
+		case 'items_by_publication_year':
+			// item.Year is BHL's simplified year of publication - a single year even
+			// where the volume spans several. It is either NULL or exactly four
+			// digits; nothing else occurs.
+			//
+			// 9999 is excluded as a sentinel (3 items). Nothing else is: the pre-1500
+			// values are mostly genuine incunabula, several items per year through the
+			// 1470s-1490s, and quietly dropping them would misrepresent the holdings.
+			// 14,537 items carry no year at all and cannot appear here.
+			$from = isset($options['from']) ? (int)$options['from'] : 0;
+			$to   = isset($options['to'])   ? (int)$options['to']   : 0;
+
+			$where = "Year GLOB '[0-9][0-9][0-9][0-9]' AND CAST(Year AS INTEGER) != 9999";
+
+			if ($from > 0) { $where .= ' AND CAST(Year AS INTEGER) >= ' . $from; }
+			if ($to   > 0) { $where .= ' AND CAST(Year AS INTEGER) <= ' . $to; }
+
+			if ($contributor !== '')
+			{
+				$where .= ' AND InstitutionName = ' . sql_string($contributor);
+			}
+
+			$sql = "SELECT CAST(Year AS INTEGER) AS PublicationYear, COUNT(DISTINCT ItemID) AS Items
+				FROM item
+				WHERE $where
+				GROUP BY CAST(Year AS INTEGER)
+				ORDER BY CAST(Year AS INTEGER)";
+			break;
+
 		case 'items_by_contributor':
 			$sql = "SELECT InstitutionName AS Contributor, COUNT(DISTINCT ItemID) AS Items
 				FROM item GROUP BY InstitutionName ORDER BY Items DESC"
@@ -1409,16 +1438,34 @@ function search_creators_fuzzy($text, $limit = 10)
 
 //----------------------------------------------------------------------------------------
 // What did this creator write? Titles they are credited on.
+// Everything a creator is credited on - titles AND articles. Both, because credits
+// live in two separate tables and 161,583 creators appear only in partcreator: for
+// them a title-only lookup returns nothing, which reads as "this person published
+// nothing" when they may have written dozens of papers.
 function creator_titles($CreatorID, $limit = 20)
 {
 	global $config;
 
-	$sql = 'SELECT t.TitleID, t.FullTitle, cr.CreatorType
+	$CreatorID = (int)$CreatorID;
+	$limit     = (int)$limit;
+
+	$sql = 'SELECT t.TitleID AS ID, "title" AS Kind, t.FullTitle AS Name,
+		cr.CreatorType AS Role, NULL AS Date
 		FROM creator cr
 		INNER JOIN title t ON t.TitleID = cr.TitleID
-		WHERE cr.CreatorID = ' . (int)$CreatorID . '
+		WHERE cr.CreatorID = ' . $CreatorID . '
 		GROUP BY t.TitleID
-		LIMIT ' . (int)$limit;
+
+		UNION ALL
+
+		SELECT p.PartID AS ID, "part" AS Kind, p.Title AS Name,
+		NULL AS Role, p.Date AS Date
+		FROM partcreator pc
+		INNER JOIN part p ON p.PartID = pc.PartID
+		WHERE pc.CreatorID = ' . $CreatorID . '
+		GROUP BY p.PartID
+
+		LIMIT ' . $limit;
 
 	return db_get($config['bhlpdo'], $sql);
 }

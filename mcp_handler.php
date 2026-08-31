@@ -29,6 +29,7 @@ function handleMcpRequest($request)
 					'name'    => 'bhl-mcp',
 					'version' => '0.1.0',
 				),
+				'instructions' => mcp_instructions(),
 				'capabilities' => array(
 					'tools' => array('list' => true, 'call' => true),
 				),
@@ -120,6 +121,65 @@ function mcp_run_tool($name, $args)
 	}
 
 	return array('content' => array(array('type' => 'text', 'text' => $result)));
+}
+
+//----------------------------------------------------------------------------------------
+// Server-level guidance, returned with the initialize result. Clients pass this to
+// the model, so it is where capabilities go that are hard to find by reading tool
+// names one at a time - the failure it exists to prevent is the model deciding the
+// server cannot do something it can.
+function mcp_instructions()
+{
+	return <<<TEXT
+This server queries a local copy of the Biodiversity Heritage Library: 192,000
+titles, 315,000 scanned volumes, 405,000 articles, 63.6 million pages and 241,000
+creators.
+
+Browsing runs in a chain, each step naming the identifier the next one needs:
+  search -> title_info / title_items -> item_parts -> part_info -> page_text
+Pages of an item that no article covers are reached with item_pages and
+item_orphan_pages; item_coverage says how much of a volume was ever segmented.
+
+Capabilities that are easy to miss:
+
+- Per-page type data IS available. item_orphan_pages(item_id, types=[...]) returns
+  the pages of an item belonging to no article, filtered by page type. This is how
+  to answer "where are the plates", "which figures are in this volume", "does the
+  plate this article cites exist", "which illustrations were never assigned to an
+  article". Type names are exact BHL strings and singular - "Illustration", not
+  "Illustrations" - and a wrong name is reported back with the item's actual types
+  rather than returning nothing. Do NOT sample pages with page_image to hunt for
+  plates: they sit at irregular positions interleaved with blanks.
+
+- page_image can crop. Pass left/top/right/bottom as fractions of the page (0-1)
+  to return one figure rather than a whole page, and size=full for detail.
+
+- statistics answers questions about BHL as a whole - how many things, what was
+  added when, by which institution, how many DOIs, how far reconciliation has got,
+  what licences and copyright statuses are recorded, and the distribution of
+  holdings by publication year. format="vega" returns a Vega-Lite chart spec.
+
+- find_by_identifier goes from a DOI, ISSN, OCLC, Wikidata Q-number, ORCID, VIAF
+  or BioStor id to the BHL record.
+
+Things about this data that mislead if assumed:
+
+- PageIDs are NOT in reading order and are not contiguous. Order pages by scan
+  position (SequenceOrder), which every tool reports. Never sort or do arithmetic
+  on PageIDs.
+- A page can carry several types at once - 3.7 million are both Text and
+  Illustration - so type tallies do not sum to the page count.
+- Taxonomic name matching is exact and case-sensitive on the genus.
+- An empty result is usually "nothing recorded", not "nothing exists": BHL
+  segments only some volumes into articles, and holds many works without an
+  identifier. The tools say which case they mean; report that distinction rather
+  than flattening it.
+- Every statistic describes the dump's date, not today. The tools state it.
+
+If a question seems unsupported, re-read the tool list before saying so. The names
+describe entities rather than tasks, so searching for a task ("page type",
+"illustration metadata") can miss a tool that plainly does it.
+TEXT;
 }
 
 //----------------------------------------------------------------------------------------
@@ -284,7 +344,7 @@ function getToolDefinitions()
 		),
 		array(
 			'name'        => 'item_orphan_pages',
-			'description' => 'List the pages of an item that belong to no article, optionally restricted to certain page types. The obvious use is finding plates and maps that were never assigned to a part — pass types ["Illustration","Map"]. Page type names are exact strings from BHL and are singular ("Illustration", not "Illustrations"); an unrecognised name is reported along with the types the item actually has, rather than returning nothing.',
+			'description' => 'List the pages of an item that belong to no article, optionally restricted to page type. This is the per-page type lookup for a volume, and the tool for any question about plates, figures, illustrations, maps or foldouts: where they are, whether a plate an article cites exists, which were never assigned to an article. Pass types ["Illustration","Foldout","Map"]. Returns PageID, scan position, printed page or plate number, and each page\'s full type list. Do not instead sample pages with page_image or page_text looking for plates — they sit at irregular positions interleaved with blanks. Page type names are exact BHL strings and singular ("Illustration", not "Illustrations"); an unrecognised name is reported along with the types the item actually has, rather than returning nothing.',
 			'inputSchema' => array(
 				'type'       => 'object',
 				'properties' => array(
@@ -308,15 +368,17 @@ function getToolDefinitions()
 					'metric' => array(
 						'type' => 'string',
 						'enum' => array(
-							'counts', 'items_by_year', 'items_by_contributor',
+							'counts', 'items_by_year', 'items_by_publication_year', 'items_by_contributor',
 							'items_by_year_contributor', 'parts_by_contributor',
 							'part_dois_by_year', 'dois_by_year_type',
 							'creator_identifiers', 'creator_identifiers_by_year',
 							'item_licences', 'item_copyright_status',
 						),
-						'description' => 'counts: how many titles, items, parts, pages and creators. items_by_year: items added per year. items_by_contributor / items_by_year_contributor: which institutions contributed, and when. parts_by_contributor: who segmented the articles. part_dois_by_year / dois_by_year_type: DOI minting over time. creator_identifiers / creator_identifiers_by_year: reconciliation to ORCID, VIAF, Wikidata and others. item_licences and item_copyright_status: rights, returned exactly as BHL records them.',
+						'description' => 'counts: how many titles, items, parts, pages and creators. items_by_year: items added to BHL per year. items_by_publication_year: items held by the year the work was PUBLISHED - this is the distribution that shows how holdings thin after the public-domain boundary, and takes from/to. items_by_contributor / items_by_year_contributor: which institutions contributed, and when. parts_by_contributor: who segmented the articles. part_dois_by_year / dois_by_year_type: DOI minting over time. creator_identifiers / creator_identifiers_by_year: reconciliation to ORCID, VIAF, Wikidata and others. item_licences and item_copyright_status: rights, returned exactly as BHL records them.',
 					),
 					'contributor' => array('type' => 'string', 'description' => 'Optional exact institution name to filter the item metrics to, e.g. "BHL Australia". Get the names from items_by_contributor.'),
+					'from'        => array('type' => 'integer', 'description' => 'Earliest publication year to include, for items_by_publication_year.'),
+					'to'          => array('type' => 'integer', 'description' => 'Latest publication year to include, for items_by_publication_year.'),
 					'limit'       => array('type' => 'integer', 'description' => 'Cap the number of rows for the ranked metrics. Default 30 for a chart, unlimited for a table.'),
 					'format'      => array('type' => 'string', 'enum' => array('table', 'vega'), 'description' => 'table (default) for the numbers, vega for a Vega-Lite specification with the data inlined.'),
 				),
@@ -589,17 +651,32 @@ function tool_creator_titles($args)
 	if ($id === 0) { return 'Provide a creator_id.'; }
 
 	$hits = creator_titles($id, mcp_limit($args, 20));
-	if (count($hits) === 0) { return mcp_none('titles for CreatorID ' . $id); }
+	if (count($hits) === 0) { return mcp_none('works for CreatorID ' . $id); }
 
-	$lines = array(count($hits) . ' title(s) for CreatorID ' . $id . ':', '');
+	$lines = array(count($hits) . ' work(s) for CreatorID ' . $id . ':', '');
 
+	// Titles and parts come back interleaved from one UNION, tagged by Kind. Many
+	// creators have only parts.
 	foreach ($hits as $hit)
 	{
-		$role = mcp_val($hit, 'CreatorType');
+		$kind = mcp_val($hit, 'Kind', 'title');
+		$ref  = mcp_val($hit, 'ID');
+		$name = mcp_val($hit, 'Name', '(untitled)');
 
-		$lines[] = 'TitleID ' . $hit->TitleID . ' - ' . mcp_val($hit, 'FullTitle', '(untitled)')
-			. ($role !== '' ? ' [' . $role . ']' : '');
-		$lines[] = '  ' . mcp_url('bibliography', $hit->TitleID);
+		if ($kind === 'part')
+		{
+			$date = mcp_val($hit, 'Date');
+
+			$lines[] = 'PartID ' . $ref . ' - ' . $name . ($date !== '' ? ' (' . $date . ')' : '');
+			$lines[] = '  ' . mcp_url('part', $ref) . ' - part_info for details';
+		}
+		else
+		{
+			$role = mcp_val($hit, 'Role');
+
+			$lines[] = 'TitleID ' . $ref . ' - ' . $name . ($role !== '' ? ' [' . $role . ']' : '');
+			$lines[] = '  ' . mcp_url('bibliography', $ref) . ' - title_info for details';
+		}
 	}
 
 	return join("\n", $lines);
@@ -1702,6 +1779,7 @@ function mcp_chart_spec($metric)
 	$charts = array(
 		'counts'                      => array('mark' => 'bar', 'x' => 'Entity',      'y' => 'Count',    'xtype' => 'nominal',  'horizontal' => true,  'title' => 'BHL by entity type'),
 		'items_by_year'               => array('mark' => 'bar', 'x' => 'AddedYear',   'y' => 'Items',    'xtype' => 'ordinal',  'horizontal' => false, 'title' => 'Items added per year'),
+		'items_by_publication_year'   => array('mark' => 'bar', 'x' => 'PublicationYear', 'y' => 'Items', 'xtype' => 'quantitative', 'horizontal' => false, 'title' => 'Items held, by year of publication'),
 		'items_by_contributor'        => array('mark' => 'bar', 'x' => 'Contributor', 'y' => 'Items',    'xtype' => 'nominal',  'horizontal' => true,  'title' => 'Items by contributing institution'),
 		'items_by_year_contributor'   => array('mark' => 'bar', 'x' => 'AddedYear',   'y' => 'Items',    'xtype' => 'ordinal',  'horizontal' => false, 'colour' => 'Contributor', 'title' => 'Items added per year, by contributor'),
 		'parts_by_contributor'        => array('mark' => 'bar', 'x' => 'Contributor', 'y' => 'Parts',    'xtype' => 'nominal',  'horizontal' => true,  'title' => 'Articles by contributor'),
@@ -1737,6 +1815,15 @@ function mcp_vega_lite($metric, $rows, $note = '')
 	if ($chart['horizontal'])
 	{
 		$category['sort'] = '-x';
+	}
+
+	// A quantitative axis is a number line, not a list of categories: 523 publication
+	// years as ordinal would render 523 axis labels. Keep the zero suppressed so the
+	// shape of the distribution is visible rather than a spike against a flat floor.
+	if ($chart['xtype'] === 'quantitative')
+	{
+		$category['scale'] = array('zero' => false);
+		$category['axis']  = array('format' => 'd');
 	}
 
 	$measure = array('field' => $chart['y'], 'type' => 'quantitative', 'title' => $chart['y']);
@@ -1810,9 +1897,18 @@ function tool_statistics($args)
 		$limit = 30;
 	}
 
+	// A year histogram must not be capped by row count: chopping it at 30 rows would
+	// silently end the distribution in the fifteenth century.
+	if ($metric === 'items_by_publication_year')
+	{
+		$limit = 0;
+	}
+
 	$options = array(
 		'contributor' => mcp_arg($args, 'contributor', ''),
 		'limit'       => $limit,
+		'from'        => (int)mcp_arg($args, 'from', 0),
+		'to'          => (int)mcp_arg($args, 'to', 0),
 	);
 
 	$rows = bhl_statistics($metric, $options);

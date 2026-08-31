@@ -122,9 +122,32 @@ title_counts = dict(src.execute(
 part_counts = dict(src.execute(
     "SELECT CreatorID, COUNT(DISTINCT PartID) FROM partcreator GROUP BY CreatorID"))
 
-rows, stats = [], collections.Counter()
+# Creators come from BOTH tables. There is no master creator table: `creator` holds
+# title-level credits (79,892) and `partcreator` holds article-level ones (171,732),
+# overlapping by only 10,149. Indexing `creator` alone left 161,583 people - two
+# thirds of BHL's creators, and most of the individual authors - unfindable by
+# search_creators. Title-level spelling wins where a creator appears in both.
+names = {}
+for cid, cname in src.execute("SELECT DISTINCT CreatorID, CreatorName FROM partcreator"):
+    names.setdefault(cid, cname)
 for cid, cname in src.execute("SELECT DISTINCT CreatorID, CreatorName FROM creator"):
-    kind = kinds.get(cid, "unknown")
+    names[cid] = cname
+
+rows, stats = [], collections.Counter()
+for cid, cname in sorted(names.items()):
+    kind = kinds.get(cid)
+    if kind is None:
+        # partcreator carries no CreatorType, so infer it. parse() returns early for
+        # anything not "personal" and never fills Surname, which creator_fts weights
+        # at 10 against NameOnly's 5 - so guessing "unknown" would index these people
+        # on their full name only and rank them below everyone else.
+        #
+        # BHL writes personal names as "Surname, Forename", so a comma is the signal.
+        # Checked against the 79,892 creators whose type IS known: 92% correct overall,
+        # 98.9% of personal names caught. The 24% of corporate names it over-calls
+        # cost only an odd Surname split; the name is still indexed and still found.
+        kind = "personal" if "," in (cname or "") else "corporate"
+        stats["kind_inferred"] += 1
     r = parse(cname, kind)
     stats[kind] += 1
     if r["BirthYear"] or r["DeathYear"]:
