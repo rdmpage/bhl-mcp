@@ -773,6 +773,7 @@ function item_part_coverage($ItemID)
 	// truncated map gives a coverage figure against the wrong denominator.
 	$sql = "SELECT PageID,
 		MIN(PageNumber)                     AS PageNumber,
+		PagePrefix                          AS PagePrefix,
 		group_concat(DISTINCT PageTypeName) AS PageTypes,
 		MIN(SequenceOrder)                  AS SequenceOrder
 		FROM page
@@ -787,6 +788,7 @@ function item_part_coverage($ItemID)
 		$page = new stdclass;
 		
 		$page->PageID        = $row->PageID;
+		$page->PagePrefix    = isset($row->PagePrefix) ? $row->PagePrefix : '';
 		$page->PageNumber    = isset($row->PageNumber) ? $row->PageNumber : '';
 		$page->PageTypes     = isset($row->PageTypes) ? explode(',', $row->PageTypes) : [];
 		$page->SequenceOrder = isset($row->SequenceOrder) ? $row->SequenceOrder : null;
@@ -817,9 +819,66 @@ WHERE part.ItemID = $ItemID";
 	return $page_map;
 }
 
+//----------------------------------------------------------------------------------------
+// Return list of pages that are not in any parts, can filter by type
+// The page types actually present in an item, with counts. Lets a caller check a
+// type name before filtering on it: the names are exact strings and "Illustrations"
+// or "Plate" match nothing at all, silently.
+function item_page_types($ItemID)
+{
+	$types = [];
 
+	foreach (item_part_coverage($ItemID) as $page)
+	{
+		foreach ($page->PageTypes as $type)
+		{
+			if ($type !== '')
+			{
+				$types[$type] = isset($types[$type]) ? $types[$type] + 1 : 1;
+			}
+		}
+	}
 
+	arsort($types);
 
+	return $types;
+}
+
+//----------------------------------------------------------------------------------------
+function item_orphan_pages($ItemID, $types = [])
+{
+	$pages = [];
+	
+	$page_map = item_part_coverage($ItemID);
+	
+	// Case-insensitive, so a caller does not have to reproduce BHL's exact casing.
+	// The names themselves still have to be right - see item_page_types().
+	$wanted = array_map('strtolower', $types);
+
+	foreach ($page_map as $page)
+	{
+		// An orphan is a page in NO part. The test is on an empty parts array.
+		if (count($page->parts) == 0)
+		{
+			if (count($wanted) == 0)
+			{
+				$pages[] = $page;
+			}
+			else
+			{
+				// only accept certain page types 
+				if (isset($page->PageTypes) && is_array($page->PageTypes))
+				{
+					if (count(array_intersect(array_map('strtolower', $page->PageTypes), $wanted)) > 0)
+					{
+						$pages[] = $page;
+					}
+				}
+			}
+		}
+	}	
+	return $pages;
+}
 
 //----------------------------------------------------------------------------------------
 

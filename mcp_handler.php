@@ -283,6 +283,23 @@ function getToolDefinitions()
 			),
 		),
 		array(
+			'name'        => 'item_orphan_pages',
+			'description' => 'List the pages of an item that belong to no article, optionally restricted to certain page types. The obvious use is finding plates and maps that were never assigned to a part — pass types ["Illustration","Map"]. Page type names are exact strings from BHL and are singular ("Illustration", not "Illustrations"); an unrecognised name is reported along with the types the item actually has, rather than returning nothing.',
+			'inputSchema' => array(
+				'type'       => 'object',
+				'properties' => array(
+					'item_id' => array('type' => 'integer', 'description' => 'BHL ItemID.'),
+					'types'   => array(
+						'type'        => 'array',
+						'items'       => array('type' => 'string'),
+						'description' => 'Optional page types to keep, e.g. ["Illustration","Map","Foldout"]. Matching is case-insensitive but the names must otherwise be exact. Omit for every orphaned page.',
+					),
+					'limit'   => array('type' => 'integer', 'description' => 'Maximum pages to list (default 100, max 500).'),
+				),
+				'required' => array('item_id'),
+			),
+		),
+		array(
 			'name'        => 'page_text',
 			'description' => 'Get the OCR text of a single BHL page. Fetched from BHL and cached locally on first use, so the first call for a page is slower.',
 			'inputSchema' => array(
@@ -335,6 +352,7 @@ function callTool($name, $args)
 		case 'name_pages':      return tool_name_pages($args);
 		case 'find_by_identifier': return tool_find_by_identifier($args);
 		case 'item_coverage':   return tool_item_coverage($args);
+		case 'item_orphan_pages': return tool_item_orphan_pages($args);
 		case 'page_text':       return tool_page_text($args);
 		case 'page_image':      return tool_page_image($args);
 		default:                return null;
@@ -1543,6 +1561,114 @@ function tool_item_coverage($args)
 		array('type' => 'text', 'text' => $text
 			. "\n\nGrid: one cell per page in reading order, 40 per row, coloured by article; grey is in no article."),
 	);
+}
+
+function tool_item_orphan_pages($args)
+{
+	$id = (int)mcp_arg($args, 'item_id', 0);
+	if ($id === 0) { return 'Provide an item_id.'; }
+
+	$types = mcp_arg($args, 'types', array());
+
+	if (!is_array($types))
+	{
+		$types = ($types === '' || $types === null) ? array() : array($types);
+	}
+
+	$limit = (int)mcp_arg($args, 'limit', 100);
+	if ($limit < 1)   { $limit = 100; }
+	if ($limit > 500) { $limit = 500; }
+
+	$present = item_page_types($id);
+
+	if (count($present) === 0)
+	{
+		return 'No pages found for ItemID ' . $id . '. The item may not exist.';
+	}
+
+	// Check the requested names before filtering. An exact-match filter on a name
+	// that is not a page type returns nothing, which is indistinguishable from "this
+	// item has no such pages" - and the plural is the natural thing to guess.
+	if (count($types) > 0)
+	{
+		$known   = array_change_key_case($present, CASE_LOWER);
+		$unknown = array();
+
+		foreach ($types as $type)
+		{
+			if (!isset($known[strtolower($type)]))
+			{
+				$unknown[] = $type;
+			}
+		}
+
+		if (count($unknown) === count($types))
+		{
+			return 'ItemID ' . $id . ' has no page type called ' . join(' or ', $unknown)
+				. '. Its page types are: ' . mcp_type_list($present) . '.';
+		}
+
+		if (count($unknown) > 0)
+		{
+			// Some matched, so the query still runs - but say which did not, or the
+			// count silently means something narrower than was asked for.
+			$note = 'Ignored, not a page type in this item: ' . join(', ', $unknown) . '.';
+		}
+	}
+
+	$pages = item_orphan_pages($id, $types);
+
+	if (count($pages) === 0)
+	{
+		return 'ItemID ' . $id . ' has no orphaned pages'
+			. (count($types) > 0 ? ' of type ' . join(' or ', $types) : '')
+			. '. Its page types are: ' . mcp_type_list($present) . '.';
+	}
+
+	$total = count($pages);
+	$shown = array_slice($pages, 0, $limit);
+
+	$lines = array();
+	$lines[] = $total . ' page(s) in ItemID ' . $id . ' belong to no article'
+		. (count($types) > 0 ? ', of type ' . join(' or ', $types) : '') . ':';
+
+	if (isset($note))
+	{
+		$lines[] = $note;
+	}
+
+	if ($total > count($shown))
+	{
+		$lines[] = 'Showing the first ' . count($shown) . '; raise limit for the rest.';
+	}
+
+	$lines[] = '';
+
+	foreach ($shown as $page)
+	{
+		$number = mcp_val($page, 'PageNumber');
+
+		$lines[] = 'PageID ' . $page->PageID
+			. ' - scan position ' . mcp_val($page, 'SequenceOrder', '?')
+			. ($number !== '' ? ' (p. ' . $number . ')' : '')
+			. ' [' . join(', ', $page->PageTypes) . ']'
+			. ' - ' . mcp_url('page', $page->PageID);
+	}
+
+	return implode("\n", $lines);
+}
+
+// "Text 471, Blank 25, Illustration 19" - the exact names, so a caller can retry.
+function mcp_type_list($types)
+{
+	$out = array();
+
+	foreach ($types as $name => $n)
+	{
+		$out[] = $name . ' ' . $n;
+	}
+
+	return join(', ', $out);
 }
 
 function tool_page_text($args)
